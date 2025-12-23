@@ -1,0 +1,57 @@
+# =============================================================================
+# NETWORK TEST POD - Debugging and Testing Container
+# =============================================================================
+# This Pod runs the "netshoot" image - a Swiss Army knife for network debugging.
+# Use it to test connectivity, DNS resolution, and troubleshoot network issues.
+#
+# USAGE:
+#   kubectl apply -f network-test-pod.yaml
+#   kubectl wait --for=condition=ready pod/network-test-pod
+#
+# INTERACTIVE SHELL:
+#   kubectl exec -it network-test-pod -- bash
+#
+# QUICK COMMANDS (without entering the pod):
+#   kubectl exec -it network-test-pod -- curl http://app-service
+#   kubectl exec -it network-test-pod -- nslookup app-service
+#   kubectl exec -it network-test-pod -- ping <pod-ip>
+#
+# NETWORK EXPLORATION (inside the pod):
+#   ip addr          # View network interfaces and IPs
+#   ip route         # View routing table
+#   cat /etc/resolv.conf    # View DNS configuration
+#   nslookup kubernetes     # Test DNS resolution
+#   curl http://service-name    # Test HTTP connectivity
+# =============================================================================
+
+apiVersion: v1 # Core API version
+kind: Pod # Pod resource type
+metadata:
+  name: network-test-pod # Pod name (kubectl get pod network-test-pod)
+  labels:
+    app: network-test # Label for identification (not used by any service here)
+spec:
+  containers:
+    - name: network-test # Container name
+      image:
+        nicolaka/netshoot # Network troubleshooting toolkit image
+        # Includes: curl, ping, nslookup, dig, tcpdump, etc.
+        # GitHub: https://github.com/nicolaka/netshoot
+
+      # RESOURCE LIMITS - Best practice to always include these
+      resources:
+        requests: # Minimum guaranteed resources
+          memory: "64Mi" # 64 Mebibytes of RAM
+          cpu: "128m" # 128 millicores (0.128 CPU cores)
+        limits: # Maximum allowed resources
+          memory: "128Mi" # Container killed if exceeds (OOMKilled)
+          cpu: "256m" # Container throttled if exceeds
+
+      # COMMAND OVERRIDE - Keep container running for debugging
+      command:
+        ["sleep", "3600"] # Sleep for 1 hour (3600 seconds)
+        # Without this, container would exit immediately
+        # Allows time to exec into it and run commands
+        #
+        # Alternative: command: ["sleep", "infinity"]
+        # for unlimited runtime (useful for long debugging)

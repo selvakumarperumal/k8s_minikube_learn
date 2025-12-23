@@ -671,6 +671,128 @@ kubectl exec -it network-test -- sh -c 'for i in $(seq 1 10); do curl -s http://
 
 This demonstrates that services automatically load-balance across all matching pods!
 
+### 2.4 Troubleshooting Service Connectivity
+
+**🔧 Common Issue: "Connection Refused" or "Could not connect to server"**
+
+When `curl http://service-name` fails, use these commands to diagnose the problem:
+
+```bash
+# ========================================
+# STEP 1: Check if pods and services exist
+# ========================================
+
+# View all pods and services
+kubectl get pods,svc -o wide
+# Look for:
+# - Pod STATUS: Should be "Running"
+# - Pod READY: Should be "1/1" (all containers ready)
+# - Service CLUSTER-IP: Should have an IP assigned
+
+# ========================================
+# STEP 2: Check if service has endpoints
+# ========================================
+
+# View service details
+kubectl describe svc <service-name>
+# IMPORTANT: Look for "Endpoints" line
+# - If empty → Service selector doesn't match any pod labels
+# - If has IPs → Service is connected to pods
+
+# List endpoints directly
+kubectl get endpoints <service-name>
+# Shows the actual pod IPs that will receive traffic
+
+# ========================================
+# STEP 3: Verify label matching
+# ========================================
+
+# Check pod labels
+kubectl get pods --show-labels
+# Example: app=demo
+
+# Check service selector
+kubectl get svc <service-name> -o yaml | grep -A 2 "selector"
+# Must match the pod labels!
+
+# ========================================
+# STEP 4: Check the pod is listening on the right port
+# ========================================
+
+# View pod logs to see what port the app is using
+kubectl logs <pod-name>
+# Look for: "Running on http://0.0.0.0:PORT"
+# Compare with containerPort and targetPort in YAML
+
+# ========================================
+# STEP 5: Test direct pod IP connection
+# ========================================
+
+# Get pod IP
+kubectl get pod <pod-name> -o wide
+# Note the IP column (e.g., 10.244.0.7)
+
+# Test direct connection (bypasses service)
+kubectl exec -it <network-test-pod> -- curl http://<pod-ip>:<port>
+# If this works but service doesn't → port mismatch in Service definition
+
+# Test service connection
+kubectl exec -it <network-test-pod> -- curl http://<service-name>
+# If direct works but this fails → DNS or service selector issue
+```
+
+**🔍 Real-World Example - Port Mismatch:**
+
+A common mistake is when the app listens on a different port than configured:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  BEFORE (Broken)                                            │
+│                                                             │
+│  FastAPI app logs: "Server started at http://0.0.0.0:80"   │
+│  BUT service.yaml says:                                     │
+│    containerPort: 8000  ← WRONG!                           │
+│    targetPort: 8000     ← WRONG!                           │
+│                                                             │
+│  Result: Traffic goes to port 8000 but nothing listens     │
+│          → Connection refused!                              │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│  AFTER (Fixed)                                              │
+│                                                             │
+│  FastAPI app logs: "Server started at http://0.0.0.0:80"   │
+│  service.yaml updated to:                                   │
+│    containerPort: 80    ← CORRECT!                         │
+│    targetPort: 80       ← CORRECT!                         │
+│                                                             │
+│  Result: Traffic flows correctly → Success!                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**⚠️ Important: Pods cannot be updated in-place for port changes!**
+
+```bash
+# If you change containerPort, you must delete and recreate the pod:
+kubectl delete pod <pod-name>
+kubectl apply -f <pod-yaml>
+
+# Services CAN be updated in-place:
+kubectl apply -f <service-yaml>
+```
+
+**💡 Quick Troubleshooting Checklist:**
+
+| Check | Command | What to Look For |
+|-------|---------|------------------|
+| Pod running? | `kubectl get pods` | STATUS=Running, READY=1/1 |
+| Service exists? | `kubectl get svc` | ClusterIP assigned |
+| Endpoints exist? | `kubectl describe svc <name>` | Endpoints line has IPs |
+| Labels match? | `kubectl get pods --show-labels` | Labels match service selector |
+| Port correct? | `kubectl logs <pod>` | "Running on" port matches targetPort |
+| Direct connection? | `kubectl exec ... curl <pod-ip>:<port>` | Works = app is fine |
+| DNS working? | `kubectl exec ... nslookup <svc>` | Returns ClusterIP |
+
 ---
 
 ## Part 3: Kubernetes Architecture

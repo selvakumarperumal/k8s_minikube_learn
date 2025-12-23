@@ -1,0 +1,79 @@
+# =============================================================================
+# STANDALONE POD + SERVICE - For Learning and Comparison
+# =============================================================================
+# This file creates a standalone Pod and Service (NOT managed by a Deployment).
+# Use this to understand the difference between Pods and Deployments.
+#
+# WHEN TO USE STANDALONE PODS:
+#   - Quick testing/debugging
+#   - Learning Kubernetes concepts
+#   - One-off tasks
+#
+# WHEN NOT TO USE (use Deployment instead):
+#   - Production workloads (no self-healing!)
+#   - Applications that need scaling
+#   - Services that need high availability
+#
+# USAGE:
+#   kubectl apply -f standalone-pod.yaml
+#
+# VERIFY:
+#   kubectl get pod,svc -o wide
+#   kubectl describe pod app-pod
+#   kubectl describe svc app-pod-service
+#   kubectl get endpoints app-pod-service
+#
+# TEST CONNECTIVITY:
+#   kubectl exec -it network-test-pod -- curl http://app-pod-service
+#
+# EXPERIMENT - See why Deployments are better:
+#   kubectl delete pod app-pod    # Pod AND service endpoint gone!
+#   # vs with Deployment: pod is automatically recreated
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# POD DEFINITION
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-pod # Pod name (must be unique in namespace)
+  labels:
+    app: demo # Label - MUST match Service selector below!
+spec:
+  containers:
+    - name: fastapi-app # Container name
+      image: fastapi_app:v1 # Your FastAPI image
+      imagePullPolicy: Never # Use local image (don't pull from registry)
+      ports:
+        - containerPort: 80 # Port the app listens on
+
+      # RESOURCE LIMITS - Always define these!
+      resources:
+        requests: # Guaranteed minimum
+          memory: "64Mi"
+          cpu: "100m"
+        limits: # Maximum allowed
+          memory: "128Mi"
+          cpu: "250m"
+
+---
+# -----------------------------------------------------------------------------
+# SERVICE DEFINITION
+# -----------------------------------------------------------------------------
+# Provides stable DNS name and networking for the standalone Pod
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-pod-service # DNS: app-pod-service.default.svc.cluster.local
+spec:
+  selector:
+    app: demo # Routes to Pod with label "app: demo"
+
+  ports:
+    - protocol: TCP
+      port: 80 # Service port (what clients connect to)
+      targetPort: 80 # Pod port (must match containerPort)
+
+  type: ClusterIP # Internal cluster access only

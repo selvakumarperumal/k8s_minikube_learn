@@ -1,0 +1,94 @@
+# =============================================================================
+# SERVICE NETWORK DEMO - Deployment and Service Configuration
+# =============================================================================
+# This file demonstrates Kubernetes networking with:
+#   1. A Deployment (manages multiple Pod replicas automatically)
+#   2. A ClusterIP Service (provides stable networking and load balancing)
+#
+# WHY DEPLOYMENT INSTEAD OF POD?
+#   - Deployment automatically creates Pods (you don't define them separately!)
+#   - Self-healing: If a Pod crashes, Deployment recreates it
+#   - Scaling: kubectl scale deployment --replicas=N
+#   - Rolling updates: Zero-downtime deployments
+#
+# USAGE:
+#   kubectl apply -f service-network-demo.yaml
+#
+# VERIFY:
+#   kubectl get deployments,pods,svc -o wide
+#   kubectl describe deployment fastapi-deployment
+#   kubectl get endpoints app-service
+#
+# TEST CONNECTIVITY:
+#   kubectl exec -it network-test-pod -- curl http://app-service
+#
+# SCALE THE DEPLOYMENT:
+#   kubectl scale deployment fastapi-deployment --replicas=5
+#
+# TEST LOAD BALANCING (notice different hostnames!):
+#   kubectl exec -it network-test-pod -- sh -c 'for i in $(seq 1 10); do curl -s http://app-service | grep hostname; done'
+#
+# ROLLING UPDATE:
+#   kubectl set image deployment/fastapi-deployment fastapi=fastapi_app:v2
+#   kubectl rollout status deployment/fastapi-deployment
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# DEPLOYMENT DEFINITION
+# -----------------------------------------------------------------------------
+# Deployment → creates ReplicaSet → creates Pods
+# You define the pod template, Deployment handles the rest!
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1 # apps/v1 for Deployment, ReplicaSet, StatefulSet, DaemonSet
+kind: Deployment
+metadata:
+  name: fastapi-deployment # Deployment name
+  labels:
+    app: fastapi
+spec:
+  replicas: 3 # Number of Pod replicas to maintain (K8s ensures exactly 3 are always running)
+
+  selector:
+    matchLabels:
+      app: fastapi # How Deployment finds its Pods
+
+  template: # POD TEMPLATE - Deployment creates Pods from this
+    metadata:
+      labels:
+        app: fastapi # Pods get this label (used by Service selector)
+    spec:
+      containers:
+        - name: fastapi
+          image: fastapi_app:v1
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+
+---
+# -----------------------------------------------------------------------------
+# SERVICE DEFINITION
+# -----------------------------------------------------------------------------
+# Routes traffic to ALL Pods with label "app: fastapi"
+# Provides: Stable DNS name, Load balancing, Service discovery
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service # DNS: app-service.default.svc.cluster.local
+spec:
+  selector:
+    app: fastapi # Routes to all pods with this label (all 3 Deployment replicas!)
+
+  ports:
+    - protocol: TCP
+      port: 80 # Service port
+      targetPort: 80 # Pod port
+
+  type: ClusterIP # Internal cluster access only

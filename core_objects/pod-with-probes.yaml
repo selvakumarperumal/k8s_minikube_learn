@@ -1,0 +1,113 @@
+# =============================================================================
+# POD WITH ALL THREE PROBE TYPES
+# =============================================================================
+# Kubernetes uses probes to monitor container health and manage traffic routing.
+# This Pod demonstrates all three probe types: liveness, readiness, and startup.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-probes
+spec:
+  containers:
+    - name: fastapi
+      image: fastapi_app:v1
+      imagePullPolicy: IfNotPresent # Use local image if available
+
+      ports:
+        - containerPort: 80 # Port the FastAPI app listens on
+
+      # =====================================================================
+      # LIVENESS PROBE - "Is the container still alive?"
+      # =====================================================================
+      # Purpose: Detect if the application is in a broken state (deadlock, crash)
+      # Action if fails: Kubernetes RESTARTS the container
+      # Use case: Recover from situations where the app is running but not working
+      livenessProbe:
+        httpGet:
+          path: /health # Endpoint to check
+          port: 80 # Port to send the request to
+        initialDelaySeconds: 5 # Wait 5 seconds after container starts before probing
+        periodSeconds: 10 # Check every 10 seconds
+
+      # =====================================================================
+      # READINESS PROBE - "Is the container ready to receive traffic?"
+      # =====================================================================
+      # Purpose: Determine if the container can handle incoming requests
+      # Action if fails: Pod is REMOVED from Service endpoints (no traffic sent)
+      # Use case: Wait for app initialization, cache warmup, DB connections
+      # Note: Container keeps running, just doesn't receive traffic
+      readinessProbe:
+        httpGet:
+          path: /health # Endpoint to check
+          port: 80
+        initialDelaySeconds: 5 # Wait before first check
+        periodSeconds: 5 # Check more frequently than liveness
+
+      # =====================================================================
+      # STARTUP PROBE - "Has the container finished starting up?"
+      # =====================================================================
+      # Purpose: Handle slow-starting containers without aggressive restarts
+      # Action if fails: Container is killed and restarted (after failureThreshold)
+      # Use case: Legacy apps or apps with slow initialization
+      #
+      # IMPORTANT: While startup probe is running:
+      #   - Liveness probe is DISABLED (won't kill slow-starting apps)
+      #   - Readiness probe is DISABLED (won't mark ready prematurely)
+      # Once startup probe succeeds, liveness and readiness probes take over
+      startupProbe:
+        httpGet:
+          path: /health # Endpoint to check
+          port: 80
+        initialDelaySeconds: 10 # Wait 10 seconds (FastAPI needs time to load)
+        periodSeconds: 5 # Check every 5 seconds
+        failureThreshold: 12 # Allow 12 failures = 60+ seconds total startup time
+
+      # =====================================================================
+      # RESOURCE MANAGEMENT - Prevents "noisy neighbor" issues
+      # =====================================================================
+      resources:
+        # Requests: Minimum guaranteed resources (used by scheduler)
+        requests:
+          memory: "64Mi" # 64 Mebibytes of RAM guaranteed
+          cpu: "100m" # 100 millicores (0.1 CPU) guaranteed
+
+        # Limits: Maximum resources allowed
+        limits:
+          memory: "128Mi" # Max 128 MiB RAM (OOMKilled if exceeded)
+          cpu: "250m" # Max 0.25 CPU (throttled if exceeded)
+
+# =============================================================================
+# PROBE TYPES COMPARISON:
+# =============================================================================
+#
+#   ┌─────────────────────────────────────────────────────────────────────────┐
+#   │  PROBE TYPE    │ PURPOSE                │ ACTION ON FAILURE             │
+#   ├─────────────────────────────────────────────────────────────────────────┤
+#   │  Startup       │ Is app done starting?  │ Restart container             │
+#   │  Liveness      │ Is app alive?          │ Restart container             │
+#   │  Readiness     │ Is app ready?          │ Stop sending traffic          │
+#   └─────────────────────────────────────────────────────────────────────────┘
+#
+# =============================================================================
+# PROBE EXECUTION FLOW:
+# =============================================================================
+#
+#   Container Start
+#         │
+#         ▼
+#   ┌───────────────┐
+#   │ Startup Probe │◄─── Runs first, protects slow-starting apps
+#   │   (if defined)│     Liveness & Readiness are PAUSED
+#   └───────┬───────┘
+#           │ Success
+#           ▼
+#   ┌───────────────┐     ┌─────────────────┐
+#   │ Liveness Probe│     │ Readiness Probe │
+#   │   (parallel)  │     │   (parallel)    │
+#   └───────────────┘     └─────────────────┘
+#         │                       │
+#         ▼                       ▼
+#   Restart if fails      Remove from Service if fails
+#
+# =============================================================================

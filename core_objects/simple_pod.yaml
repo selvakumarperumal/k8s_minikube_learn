@@ -1,0 +1,121 @@
+# =============================================================================
+# KUBERNETES POD DEFINITION
+# =============================================================================
+# A Pod is the smallest deployable unit in Kubernetes - it represents a single
+# instance of a running process in your cluster.
+
+apiVersion: v1 # Core API version for Pod resources
+kind: Pod # Resource type - creating a Pod object
+metadata:
+  name: simple-pod # Unique name for this Pod within the namespace
+  labels:
+    app:
+      simple-app # Labels are key-value pairs used for organizing and selecting resources
+      # This label will be used by the Service to find this Pod
+spec:
+  # restartPolicy defines what happens when a container exits:
+  #   - Always (default): Always restart the container
+  #   - OnFailure: Only restart if container exits with non-zero code
+  #   - Never: Never restart the container
+  restartPolicy: Always
+
+  containers:
+    - name: simple-container # Name for this container within the Pod
+      image: fastapi_app:v1 # Container image to use (from local Minikube registry)
+      imagePullPolicy:
+        IfNotPresent # Don't pull if image exists locally
+        # Options: Always, IfNotPresent, Never
+
+      # Ports exposed by the container
+      ports:
+        - containerPort: 80 # Port the app listens on inside the container
+          name: http # Named port - can be referenced by probes and services
+
+      # =======================================================================
+      # HEALTH PROBES - How Kubernetes monitors container health
+      # =======================================================================
+
+      # LIVENESS PROBE: "Is the container alive?"
+      # If this fails, Kubernetes will RESTART the container
+      # Use case: Detect deadlocks or hung processes
+      livenessProbe:
+        httpGet:
+          path: /health # Endpoint to check
+          port: http # Using named port defined above
+        initialDelaySeconds: 3 # Wait 3 seconds before first check (app startup time)
+        periodSeconds: 3 # Check every 3 seconds
+
+      # READINESS PROBE: "Is the container ready to receive traffic?"
+      # If this fails, Kubernetes will REMOVE the Pod from Service endpoints
+      # The container keeps running but won't receive traffic
+      # Use case: Waiting for cache warmup, database connections, etc.
+      readinessProbe:
+        httpGet:
+          path: /health # Endpoint to check
+          port: http # Using named port defined above
+        initialDelaySeconds: 3 # Wait before first check
+        periodSeconds: 3 # Check every 3 seconds
+
+      # =======================================================================
+      # RESOURCE MANAGEMENT - Prevents "noisy neighbor" issues
+      # =======================================================================
+      resources:
+        # REQUESTS: Minimum resources GUARANTEED to this container
+        # The scheduler uses these values to decide which node to place the Pod on
+        requests:
+          memory: "64Mi" # 64 Mebibytes of RAM guaranteed
+          cpu: "100m" # 100 millicores = 0.1 CPU cores guaranteed
+
+        # LIMITS: Maximum resources this container CAN use
+        # If exceeded:
+        #   - CPU: Container is throttled (slowed down)
+        #   - Memory: Container is killed (OOMKilled) and restarted
+        limits:
+          memory: "128Mi" # Max 128 MiB RAM
+          cpu: "250m" # Max 0.25 CPU cores
+
+# =============================================================================
+# KUBERNETES SERVICE DEFINITION
+# =============================================================================
+# A Service provides a stable network endpoint to access Pods.
+# Pods are ephemeral (they come and go), but Services provide a consistent
+# way to reach them using DNS names and load balancing.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-service # Service DNS name: simple-service.<namespace>.svc.cluster.local
+
+spec:
+  # SELECTOR: Defines which Pods this Service routes traffic to
+  # This Service will find ALL Pods with the label "app: simple-app"
+  # and load balance traffic across them
+  selector:
+    app: simple-app # Must match the Pod's label above
+
+  # Service type (default is ClusterIP):
+  #   - ClusterIP: Internal cluster IP only (default)
+  #   - NodePort: Exposes on each Node's IP at a static port
+  #   - LoadBalancer: Creates external load balancer (cloud providers)
+  #   - ExternalName: Maps to external DNS name
+
+  # PORT MAPPING
+  ports:
+    - protocol: TCP # TCP or UDP
+      port: 80 # Port the SERVICE listens on (other Pods connect to this)
+      targetPort:
+        80 # Port on the POD to forward traffic to
+        # Can also use named port: targetPort: http
+# =============================================================================
+# HOW IT ALL CONNECTS:
+# =============================================================================
+#
+#   [Other Pod] --> simple-service:80 --> [simple-pod:80]
+#                         ^                      ^
+#                    Service port          Container port
+#
+#   1. Other Pods connect to "simple-service:80"
+#   2. The Service finds Pods matching selector "app: simple-app"
+#   3. Traffic is forwarded to the Pod's targetPort (80)
+#
+# =============================================================================

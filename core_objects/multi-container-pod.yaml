@@ -1,0 +1,126 @@
+# =============================================================================
+# MULTI-CONTAINER POD DEFINITION
+# =============================================================================
+# This Pod demonstrates the "sidecar" pattern with multiple containers sharing:
+# - Network namespace (same IP address, can communicate via localhost)
+# - Storage volumes (can share data via mounted volumes)
+# - Lifecycle (containers start/stop together)
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-container-pod
+  labels:
+    app: multi-container-app
+spec:
+  restartPolicy: Always
+
+  containers:
+    # =========================================================================
+    # PRIMARY CONTAINER - Main Application
+    # =========================================================================
+    - name: main-app
+      image: fastapi_app:v1
+      imagePullPolicy: IfNotPresent
+
+      ports:
+        - containerPort: 80
+          name: http
+
+      # Health probes for the main application
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: http
+        initialDelaySeconds: 5
+        periodSeconds: 10
+
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: http
+        initialDelaySeconds: 5
+        periodSeconds: 5
+
+      # RESOURCE MANAGEMENT - Prevents "noisy neighbor" issues
+      # Without these, containers can consume unlimited resources!
+      resources:
+        requests:
+          memory: "64Mi" # Minimum guaranteed memory
+          cpu: "100m" # Minimum guaranteed CPU (0.1 cores)
+        limits:
+          memory: "128Mi" # Maximum allowed memory (OOMKilled if exceeded)
+          cpu: "250m" # Maximum allowed CPU (throttled if exceeded)
+
+    # =========================================================================
+    # SIDECAR CONTAINER - Log Aggregator/Helper
+    # =========================================================================
+    # Common sidecar patterns:
+    # - Log collectors (fluentd, filebeat)
+    # - Proxies (envoy, nginx)
+    # - Monitoring agents
+    # - Data sync containers
+    - name: log-sidecar
+      image: busybox:latest
+      imagePullPolicy: IfNotPresent
+
+      # Simple sidecar that tails logs (example purpose)
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Log sidecar started..."
+          while true; do
+            echo "[$(date)] Sidecar heartbeat"
+            sleep 30
+          done
+
+      # RESOURCE MANAGEMENT - Even small sidecars need limits!
+      resources:
+        requests:
+          memory: "32Mi" # Sidecars often need less resources
+          cpu: "50m" # 0.05 cores
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
+# =============================================================================
+# RESOURCE UNITS EXPLAINED:
+# =============================================================================
+#
+# CPU Units:
+#   - 1 CPU = 1 core = 1000m (millicores)
+#   - 500m = 0.5 CPU = half a core
+#   - 100m = 0.1 CPU = 10% of a core
+#
+# Memory Units:
+#   - Ki (Kibibytes), Mi (Mebibytes), Gi (Gibibytes)
+#   - 64Mi = 67,108,864 bytes ≈ 64 MB
+#   - 1Gi = 1,073,741,824 bytes ≈ 1 GB
+#
+# =============================================================================
+# WHY RESOURCES MATTER:
+# =============================================================================
+#
+# Without resources defined:
+#   ┌─────────────────────────────────────────┐
+#   │               NODE                       │
+#   │  ┌─────────┐  ┌─────────┐  ┌─────────┐  │
+#   │  │ Pod A   │  │ Pod B   │  │ Pod C   │  │
+#   │  │ (greedy)│  │ (starved│  │ (starved│  │
+#   │  │ ████████│  │ 🚫      │  │ 🚫      │  │
+#   │  └─────────┘  └─────────┘  └─────────┘  │
+#   └─────────────────────────────────────────┘
+#   Pod A consumes all resources = "Noisy Neighbor"
+#
+# With resources defined:
+#   ┌─────────────────────────────────────────┐
+#   │               NODE                       │
+#   │  ┌─────────┐  ┌─────────┐  ┌─────────┐  │
+#   │  │ Pod A   │  │ Pod B   │  │ Pod C   │  │
+#   │  │ ██      │  │ ██      │  │ ██      │  │
+#   │  │ limited │  │ limited │  │ limited │  │
+#   │  └─────────┘  └─────────┘  └─────────┘  │
+#   └─────────────────────────────────────────┘
+#   Fair resource allocation = Stable performance
+#
+# =============================================================================

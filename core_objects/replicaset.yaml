@@ -1,0 +1,323 @@
+# =============================================================================
+# KUBERNETES REPLICASET CONFIGURATION
+# =============================================================================
+# A ReplicaSet ensures that a specified number of pod replicas are running
+# at any given time. It's the next-generation Replication Controller.
+# Key features:
+#   - Maintains a stable set of replica Pods running at any given time
+#   - Guarantees the availability of a specified number of identical Pods
+#   - Uses set-based selectors (more flexible than equality-based)
+#
+# NOTE: In production, use Deployments instead of ReplicaSets directly.
+# Deployments manage ReplicaSets and provide declarative updates to Pods.
+# =============================================================================
+
+# API version for ReplicaSet - must be apps/v1 (not v1)
+# The 'apps' API group contains higher-level abstractions for running applications
+apiVersion: apps/v1
+
+# Kind specifies the type of Kubernetes object
+# ReplicaSet = ensures a specified number of pod replicas are running
+kind: ReplicaSet
+
+# Metadata: Information that uniquely identifies the ReplicaSet
+metadata:
+  # name: Unique identifier for this ReplicaSet within the namespace
+  # Used for referencing this resource in kubectl commands
+  # Example: kubectl get replicaset fastapi-replicaset
+  name: fastapi-replicaset
+
+  # labels: Key-value pairs for organizing and selecting resources
+  # Labels are used to group related resources together
+  # These labels are attached to the ReplicaSet itself (not the pods it creates)
+  labels:
+    app: fastapi
+
+# Spec: Defines the desired state for the ReplicaSet
+spec:
+  # replicas: Number of pod instances to maintain
+  # If a pod fails/is deleted, ReplicaSet will create a new one
+  # If there are more pods than specified, excess pods will be terminated
+  # Default is 1 if not specified
+  replicas: 3
+
+  # selector: Defines how ReplicaSet finds which Pods to manage
+  # CRITICAL: This must match the labels in the pod template below
+  # The ReplicaSet uses this selector to identify its pods
+  selector:
+    # matchLabels: Pods must have ALL these labels to be managed
+    # This is an equality-based selector (key=value matching)
+    matchLabels:
+      app: fastapi
+
+  # template: Pod template - defines the pods that ReplicaSet will create
+  # This is essentially a Pod spec nested inside the ReplicaSet
+  template:
+    # metadata: Labels for the pods created by this ReplicaSet
+    # IMPORTANT: These labels MUST match the selector.matchLabels above
+    # Otherwise, ReplicaSet will create infinite pods (selector never matches)
+    metadata:
+      labels:
+        app: fastapi
+
+    # spec: The specification for each pod created by this ReplicaSet
+    spec:
+      # containers: List of containers to run in each pod
+      # A pod can have multiple containers (sidecar pattern)
+      containers:
+        # First (and only) container definition
+        - name: fastapi
+
+          # image: Container image to run
+          # Format: [registry/][repository/]image[:tag]
+          # This uses a local image built with Minikube's Docker daemon
+          image: fastapi_app:v1
+
+          # imagePullPolicy: When to pull the container image
+          # - Always: Always pull from registry
+          # - Never: Never pull, only use local images
+          # - IfNotPresent: Pull only if image doesn't exist locally (default for tagged images)
+          # Using IfNotPresent for local development with Minikube
+          imagePullPolicy: IfNotPresent
+
+          # ports: List of ports to expose from the container
+          # This is informational - actual network exposure requires a Service
+          ports:
+            # containerPort: The port the application listens on inside the container
+            # This should match the port your FastAPI app binds to (usually 80 or 8000)
+            - containerPort: 80
+
+          # resources: CPU and memory allocation for this container
+          # Setting resources prevents "noisy neighbor" issues and enables
+          # proper scheduling by the Kubernetes scheduler
+          resources:
+            # requests: Guaranteed minimum resources for the container
+            # Scheduler uses these values to find a suitable node
+            # If a node doesn't have enough resources, pod won't be scheduled there
+            requests:
+              # memory: Minimum memory allocation
+              # Mi = Mebibytes (1 Mi = 1,048,576 bytes)
+              memory: "64Mi"
+              # cpu: Minimum CPU allocation
+              # 100m = 100 millicores = 0.1 CPU cores (10% of one core)
+              cpu: "100m"
+
+            # limits: Maximum resources the container can use
+            # If container exceeds memory limit, it may be killed (OOMKilled)
+            # If container exceeds CPU limit, it gets throttled (not killed)
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+
+# =============================================================================
+# YAML DOCUMENT SEPARATOR
+# =============================================================================
+# The '---' separates multiple Kubernetes objects in a single file
+# Each section is treated as an independent resource
+---
+# =============================================================================
+# KUBERNETES SERVICE CONFIGURATION
+# =============================================================================
+# A Service provides stable networking for a set of Pods
+# Why Services are needed:
+#   - Pods are ephemeral and can be replaced (new IP addresses)
+#   - Services provide a stable IP and DNS name
+#   - Services load-balance traffic across multiple pod replicas
+# =============================================================================
+
+# API version for Service - uses core API group (v1)
+apiVersion: v1
+
+# Kind specifies this is a Service object
+kind: Service
+
+# Metadata for the Service
+metadata:
+  # name: This becomes the DNS name for the service
+  # Other pods can reach this service using: fastapi-service.<namespace>.svc.cluster.local
+  # Or simply: fastapi-service (within same namespace)
+  name: fastapi-service
+
+# Spec: Defines how the Service behaves
+spec:
+  # selector: Determines which pods receive traffic from this Service
+  # Pods with matching labels will be added to the Service's endpoint list
+  # This MUST match the labels on the pods we want to expose
+  selector:
+    app: fastapi
+
+  # type: (not specified = defaults to ClusterIP)
+  # Service types:
+  #   - ClusterIP: Internal cluster IP only (default)
+  #   - NodePort: Exposes on each node's IP at a static port
+  #   - LoadBalancer: Provisions external load balancer (cloud providers)
+  #   - ExternalName: Maps to external DNS name
+
+  # ports: List of ports the Service exposes
+  ports:
+    # Protocol: Network protocol (TCP, UDP, or SCTP)
+    - protocol: TCP
+
+      # port: The port the Service listens on (what clients connect to)
+      # This is the port exposed within the cluster
+      port: 80
+
+      # targetPort: The port on the pods to forward traffic to
+      # This should match containerPort in the pod spec
+      # Traffic flow: Client -> Service:port -> Pod:targetPort
+      targetPort: 80
+# =============================================================================
+# REPLICASET ARCHITECTURE DIAGRAM:
+# =============================================================================
+#
+#   ┌─────────────────────────────────────────────────────────────────────────┐
+#   │                           ReplicaSet                                     │
+#   │                     (fastapi-replicaset)                                 │
+#   │                                                                          │
+#   │   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                   │
+#   │   │   Pod 1     │   │   Pod 2     │   │   Pod 3     │   ◄── replicas: 3 │
+#   │   │ app:fastapi │   │ app:fastapi │   │ app:fastapi │                   │
+#   │   │  ┌───────┐  │   │  ┌───────┐  │   │  ┌───────┐  │                   │
+#   │   │  │fastapi│  │   │  │fastapi│  │   │  │fastapi│  │                   │
+#   │   │  │ :80   │  │   │  │ :80   │  │   │  │ :80   │  │                   │
+#   │   │  └───────┘  │   │  └───────┘  │   │  └───────┘  │                   │
+#   │   └─────────────┘   └─────────────┘   └─────────────┘                   │
+#   │         ▲                 ▲                 ▲                           │
+#   │         │                 │                 │                           │
+#   │         └─────────────────┼─────────────────┘                           │
+#   │                           │                                             │
+#   │                   selector: app=fastapi                                 │
+#   └─────────────────────────────────────────────────────────────────────────┘
+#
+# =============================================================================
+# REPLICASET SELF-HEALING BEHAVIOR:
+# =============================================================================
+#
+#   SCENARIO: Pod 2 crashes or is deleted
+#
+#   ┌────────────┐        ┌────────────┐        ┌────────────┐
+#   │   Pod 1    │        │   Pod 2    │        │   Pod 3    │
+#   │  Running   │        │  Running   │        │  Running   │
+#   └────────────┘        └────────────┘        └────────────┘
+#                               │
+#                               ▼ Pod crashes!
+#                         ┌────────────┐
+#                         │   Pod 2    │
+#                         │   DEAD ☠️   │
+#                         └────────────┘
+#                               │
+#                               ▼ ReplicaSet detects: 2 < 3 replicas
+#                         ┌────────────┐
+#                         │  Pod 2-new │
+#                         │  Creating  │ ◄── ReplicaSet creates new Pod
+#                         └────────────┘
+#                               │
+#                               ▼ Pod is ready
+#   ┌────────────┐        ┌────────────┐        ┌────────────┐
+#   │   Pod 1    │        │  Pod 2-new │        │   Pod 3    │
+#   │  Running   │        │  Running   │        │  Running   │
+#   └────────────┘        └────────────┘        └────────────┘
+#
+#   Result: Desired state (3 replicas) is restored automatically!
+#
+# =============================================================================
+# LABEL SELECTOR MATCHING:
+# =============================================================================
+#
+#   ReplicaSet spec.selector.matchLabels: app=fastapi
+#                     │
+#                     ▼
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │                    Kubernetes API Server                     │
+#   │                                                              │
+#   │   "Find all Pods where metadata.labels.app == 'fastapi'"    │
+#   └─────────────────────────────────────────────────────────────┘
+#                     │
+#          ┌──────────┼──────────┐
+#          ▼          ▼          ▼
+#   ┌────────────┐ ┌────────────┐ ┌────────────┐
+#   │   Pod 1    │ │   Pod 2    │ │   Pod 3    │
+#   │ app:fastapi│ │ app:fastapi│ │ app:fastapi│
+#   │   MATCH ✓  │ │   MATCH ✓  │ │   MATCH ✓  │
+#   └────────────┘ └────────────┘ └────────────┘
+#
+#   ⚠️  CRITICAL: template.metadata.labels MUST match selector.matchLabels
+#                Otherwise: Infinite pod creation loop!
+#
+# =============================================================================
+# SERVICE TRAFFIC FLOW DIAGRAM:
+# =============================================================================
+#
+#   ┌─────────────────────────────────────────────────────────────────────────┐
+#   │                           Kubernetes Cluster                             │
+#   │                                                                          │
+#   │   ┌───────────────────────────────────────────────────────────────┐     │
+#   │   │                     Service (ClusterIP)                        │     │
+#   │   │                   fastapi-service:80                           │     │
+#   │   │                   IP: 10.96.xxx.xxx                            │     │
+#   │   │                                                                │     │
+#   │   │   DNS: fastapi-service.default.svc.cluster.local               │     │
+#   │   └───────────────────────────┬───────────────────────────────────┘     │
+#   │                               │                                          │
+#   │                    Load Balancing (round-robin)                          │
+#   │                               │                                          │
+#   │              ┌────────────────┼────────────────┐                        │
+#   │              ▼                ▼                ▼                        │
+#   │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
+#   │   │    Pod 1     │  │    Pod 2     │  │    Pod 3     │                  │
+#   │   │  10.1.0.10   │  │  10.1.0.11   │  │  10.1.0.12   │  ◄── Pod IPs    │
+#   │   │      :80     │  │      :80     │  │      :80     │      (dynamic)   │
+#   │   │ app: fastapi │  │ app: fastapi │  │ app: fastapi │                  │
+#   │   └──────────────┘  └──────────────┘  └──────────────┘                  │
+#   │                                                                          │
+#   └─────────────────────────────────────────────────────────────────────────┘
+#
+#   Traffic Flow:
+#   Client ──► fastapi-service:80 ──► (kube-proxy) ──► Pod:80
+#
+# =============================================================================
+# REPLICASET VS DEPLOYMENT COMPARISON:
+# =============================================================================
+#
+#   ┌─────────────────────┬─────────────────────┬─────────────────────────────┐
+#   │      Feature        │     ReplicaSet      │        Deployment           │
+#   ├─────────────────────┼─────────────────────┼─────────────────────────────┤
+#   │ Maintains replicas  │         ✓           │      ✓ (via ReplicaSet)     │
+#   │ Self-healing        │         ✓           │      ✓                      │
+#   │ Rolling updates     │         ✗           │      ✓                      │
+#   │ Rollback support    │         ✗           │      ✓                      │
+#   │ Version history     │         ✗           │      ✓                      │
+#   │ Pause/Resume        │         ✗           │      ✓                      │
+#   │ Declarative updates │         ✗           │      ✓                      │
+#   │ Use in production   │    Not directly     │      ✓ (Recommended)        │
+#   └─────────────────────┴─────────────────────┴─────────────────────────────┘
+#
+#   Deployment creates → ReplicaSet creates → Pods
+#
+# =============================================================================
+# USEFUL KUBECTL COMMANDS:
+# =============================================================================
+#
+#   # Apply this configuration
+#   kubectl apply -f replicaset.yaml
+#
+#   # View ReplicaSet status
+#   kubectl get replicaset
+#   kubectl describe replicaset fastapi-replicaset
+#
+#   # View pods created by ReplicaSet
+#   kubectl get pods -l app=fastapi
+#
+#   # Scale ReplicaSet (temporary - use Deployment for persistent scaling)
+#   kubectl scale replicaset fastapi-replicaset --replicas=5
+#
+#   # View Service endpoints (shows which pods receive traffic)
+#   kubectl get endpoints fastapi-service
+#
+#   # Test Service connectivity from another pod
+#   kubectl run test --rm -it --image=busybox -- wget -qO- fastapi-service:80
+#
+#   # Delete ReplicaSet (also deletes all pods it manages)
+#   kubectl delete replicaset fastapi-replicaset
+#
+# =============================================================================

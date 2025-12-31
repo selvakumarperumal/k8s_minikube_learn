@@ -1,0 +1,430 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║          KUBERNETES CLUSTERIP SERVICE - COMPLETE LEARNING GUIDE           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This file demonstrates:
+# 1. A Deployment that creates 3 replicas of a FastAPI backend
+# 2. A ClusterIP Service that routes internal traffic to those pods
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                          TABLE OF CONTENTS                                  │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │  1. Traffic Flow Diagram                                                    │
+# │  2. Service Types Comparison                                                │
+# │  3. ClusterIP Deep Dive                                                     │
+# │  4. Deployment Manifest (with detailed comments)                            │
+# │  5. Service Manifest (with detailed comments)                               │
+# │  6. Useful kubectl Commands                                                 │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      1. CLUSTERIP TRAFFIC FLOW                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#  ┌─────────────────┐
+#  │  Pod (Client)   │    ⚠️  Only accessible from INSIDE the cluster!
+#  │  in Cluster     │        External clients CANNOT reach ClusterIP services
+#  └────────┬────────┘
+#           │
+#           │  curl http://backend-service:80
+#           │  curl http://backend-service.default.svc.cluster.local:80
+#           │  curl http://10.96.x.x:80  (ClusterIP address)
+#           ▼
+#  ┌─────────────────────────────────────────┐
+#  │         ClusterIP Service               │
+#  │         backend-service                 │
+#  │         ─────────────────               │
+#  │     ClusterIP: 10.96.x.x (auto)         │  ← Virtual IP (no real interface)
+#  │     Port: 80                            │  ← What clients connect to
+#  │     TargetPort: 80                      │  ← Where traffic goes on pods
+#  │     Selector: app=backend               │  ← How pods are discovered
+#  └────────┬───────────┬───────────┬────────┘
+#           │           │           │
+#           │   kube-proxy handles routing
+#           │   (iptables or IPVS rules)
+#           │           │           │
+#           │ Load Balancing (Round Robin by default)
+#           │           │           │
+#           ▼           ▼           ▼
+#  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+#  │   Pod 1     │ │   Pod 2     │ │   Pod 3     │
+#  │ ─────────── │ │ ─────────── │ │ ─────────── │
+#  │ app=backend │ │ app=backend │ │ app=backend │
+#  │ port: 80    │ │ port: 80    │ │ port: 80    │
+#  │ (fastapi)   │ │ (fastapi)   │ │ (fastapi)   │
+#  │             │ │             │ │             │
+#  │ IP: 10.1.x.1│ │ IP: 10.1.x.2│ │ IP: 10.1.x.3│  ← Pod IPs (ephemeral)
+#  └─────────────┘ └─────────────┘ └─────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                    2. KUBERNETES SERVICE TYPES                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#  ┌────────────────┬─────────────────────────────────────────────────────────┐
+#  │ Service Type   │ Description                                             │
+#  ├────────────────┼─────────────────────────────────────────────────────────┤
+#  │ ClusterIP      │ • DEFAULT type                                          │
+#  │ (This file!)   │ • Internal cluster IP only                              │
+#  │                │ • No external access                                    │
+#  │                │ • Best for: internal microservices, databases           │
+#  ├────────────────┼─────────────────────────────────────────────────────────┤
+#  │ NodePort       │ • Exposes on each node's IP at a static port            │
+#  │                │ • Range: 30000-32767                                    │
+#  │                │ • Access: <NodeIP>:<NodePort>                           │
+#  │                │ • Best for: development, simple external access         │
+#  ├────────────────┼─────────────────────────────────────────────────────────┤
+#  │ LoadBalancer   │ • Provisions cloud load balancer (AWS ELB, GCP LB)      │
+#  │                │ • External IP assigned by cloud provider                │
+#  │                │ • Best for: production external services                │
+#  ├────────────────┼─────────────────────────────────────────────────────────┤
+#  │ ExternalName   │ • Maps to external DNS name (CNAME)                     │
+#  │                │ • No proxying, just DNS alias                           │
+#  │                │ • Best for: external services integration               │
+#  └────────────────┴─────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       3. CLUSTERIP DEEP DIVE                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#  HOW IT WORKS:
+#  ─────────────
+#  1. Service is created → Kubernetes assigns a virtual ClusterIP (e.g., 10.96.0.50)
+#  2. kube-proxy watches for Service/Endpoint changes
+#  3. kube-proxy creates iptables/IPVS rules on EVERY node
+#  4. When pod sends traffic to ClusterIP:80 → iptables rewrites to Pod IP:80
+#  5. Connection is load-balanced across all matching pods
+#
+#  DNS RESOLUTION:
+#  ───────────────
+#  CoreDNS provides automatic DNS entries:
+#
+#  Full:    backend-service.default.svc.cluster.local
+#            └───────┬─────┘ └──┬──┘ └─┬┘ └────┬─────┘
+#               Service     Namespace │    Cluster domain
+#                 name                │
+#                              "svc" literal
+#
+#  Short forms (within same namespace):
+#    • backend-service
+#    • backend-service.default
+#    • backend-service.default.svc
+#
+#  ENDPOINTS:
+#  ──────────
+#  Kubernetes automatically creates an Endpoints object that tracks
+#  all pod IPs matching the selector. View with:
+#    kubectl get endpoints backend-service
+#
+#  SESSION AFFINITY:
+#  ─────────────────
+#  By default: None (round-robin load balancing)
+#  Options:
+#    • None       - Requests distributed randomly
+#    • ClientIP   - Same client IP always goes to same pod
+#
+#  Add to spec:
+#    sessionAffinity: ClientIP
+#    sessionAffinityConfig:
+#      clientIP:
+#        timeoutSeconds: 10800  # 3 hours
+#
+#  HEADLESS SERVICE:
+#  ─────────────────
+#  Set clusterIP: None to create a headless service
+#  • No load balancing
+#  • DNS returns all pod IPs directly
+#  • Useful for: StatefulSets, peer discovery
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                   4. DEPLOYMENT MANIFEST                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apiVersion: Specifies the API group and version
+# ─────────────────────────────────────────────────────────────────────────────
+# apps/v1 is the stable API for Deployments, ReplicaSets, StatefulSets
+# Use 'kubectl api-resources' to see all available APIs
+apiVersion: apps/v1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# kind: The type of Kubernetes object
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment manages ReplicaSets and provides declarative updates to pods
+# Deployment → ReplicaSet → Pod (hierarchy)
+kind: Deployment
+
+# ─────────────────────────────────────────────────────────────────────────────
+# metadata: Data that identifies the object
+# ─────────────────────────────────────────────────────────────────────────────
+metadata:
+  # name: Unique identifier within the namespace
+  # Must be: lowercase, alphanumeric, '-' or '.', max 253 chars
+  name: backend
+  # labels: Key-value pairs for organizing and selecting objects
+  # Best practice: always add labels for better manageability
+  labels:
+    app: backend
+    tier: api
+    environment: development
+
+# ─────────────────────────────────────────────────────────────────────────────
+# spec: Desired state of the Deployment
+# ─────────────────────────────────────────────────────────────────────────────
+spec:
+  # ───────────────────────────────────────────────────────────────────────────
+  # replicas: Number of pod copies to maintain
+  # ───────────────────────────────────────────────────────────────────────────
+  # The Deployment controller ensures this many pods are always running
+  # If a pod dies, a new one is automatically created
+  replicas: 3
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # selector: How the Deployment finds pods to manage
+  # ───────────────────────────────────────────────────────────────────────────
+  # MUST match the labels in template.metadata.labels
+  # This creates the link: Deployment → Pods
+  selector:
+    matchLabels:
+      app: backend
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # strategy: How to replace old pods with new ones during updates
+  # ───────────────────────────────────────────────────────────────────────────
+  # RollingUpdate (default): Gradually replace pods
+  # Recreate: Kill all old pods before creating new ones
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge: Max pods above desired count during update
+      # Can be absolute number (1) or percentage (25%)
+      maxSurge: 1
+      # maxUnavailable: Max pods that can be unavailable during update
+      maxUnavailable: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # template: Pod template - defines the pods that will be created
+  # ───────────────────────────────────────────────────────────────────────────
+  template:
+    # Pod metadata
+    metadata:
+      # These labels MUST match selector.matchLabels above
+      labels:
+        app: backend
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pod spec: Defines containers and their configuration
+    # ─────────────────────────────────────────────────────────────────────────
+    spec:
+      # ───────────────────────────────────────────────────────────────────────
+      # containers: List of containers in the pod
+      # ───────────────────────────────────────────────────────────────────────
+      containers:
+        - name: fastapi
+          # ─────────────────────────────────────────────────────────────────
+          # image: Container image to run
+          # ─────────────────────────────────────────────────────────────────
+          # Format: [registry/][repository/]image[:tag]
+          # Examples:
+          #   nginx:1.19                    (Docker Hub official)
+          #   my-registry.io/app:v1         (Private registry)
+          #   gcr.io/project/image:latest   (Google Container Registry)
+          image: fastapi_app:v1
+
+          # ─────────────────────────────────────────────────────────────────
+          # imagePullPolicy: When to pull the image
+          # ─────────────────────────────────────────────────────────────────
+          # Always:       Always pull from registry
+          # IfNotPresent: Pull only if not cached locally
+          # Never:        Never pull, use local image only (for minikube)
+          imagePullPolicy: Never
+
+          # ─────────────────────────────────────────────────────────────────
+          # ports: Container ports to expose
+          # ─────────────────────────────────────────────────────────────────
+          # This is mostly informational - doesn't actually publish ports
+          # The Service is what makes ports accessible
+          ports:
+            - name: http # Named port (referenced by Service)
+              containerPort: 80 # Port the container listens on
+              protocol: TCP # TCP (default) or UDP
+
+          # ─────────────────────────────────────────────────────────────────
+          # resources: CPU and memory requests/limits
+          # ─────────────────────────────────────────────────────────────────
+          # CRITICAL: Always set resources to prevent "noisy neighbor" issues
+          #
+          # requests: Guaranteed resources (used for scheduling)
+          #   - Pod only scheduled on nodes with enough resources
+          #   - These resources are RESERVED for this container
+          #
+          # limits: Maximum resources (used for throttling/killing)
+          #   - CPU: Container is throttled if it exceeds limit
+          #   - Memory: Container is OOM-killed if it exceeds limit
+          #
+          # CPU units:
+          #   1 CPU = 1000m (millicores)
+          #   100m = 0.1 CPU = 10% of one core
+          #   250m = 0.25 CPU = 25% of one core
+          #
+          # Memory units:
+          #   Ki = Kibibyte (1024 bytes)
+          #   Mi = Mebibyte (1024 Ki)
+          #   Gi = Gibibyte (1024 Mi)
+          resources:
+            requests:
+              memory: "128Mi" # Minimum guaranteed memory
+              cpu: "100m" # Minimum guaranteed CPU
+            limits:
+              memory: "256Mi" # Maximum memory (OOM kill if exceeded)
+              cpu: "250m" # Maximum CPU (throttled if exceeded)
+
+          # ─────────────────────────────────────────────────────────────────
+          # Environment variables (optional but commonly used)
+          # ─────────────────────────────────────────────────────────────────
+          env:
+            - name: APP_ENV
+              value: "development"
+            - name: LOG_LEVEL
+              value: "INFO"
+            # Reference from ConfigMap:
+            # - name: DATABASE_URL
+            #   valueFrom:
+            #     configMapKeyRef:
+            #       name: app-config
+            #       key: database-url
+            # Reference from Secret:
+            # - name: API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: app-secrets
+            #       key: api-key
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                     5. CLUSTERIP SERVICE MANIFEST                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Services provide stable networking for pods
+# ─────────────────────────────────────────────────────────────────────────────
+# Why do we need Services?
+#   • Pod IPs are ephemeral (change when pods restart)
+#   • Services provide a stable IP and DNS name
+#   • Services load balance across multiple pod replicas
+#   • Services abstract pod discovery from clients
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: backend-service
+  labels:
+    app: backend
+    tier: api
+
+spec:
+  # ───────────────────────────────────────────────────────────────────────────
+  # type: Service type (ClusterIP, NodePort, LoadBalancer, ExternalName)
+  # ───────────────────────────────────────────────────────────────────────────
+  # ClusterIP is the default - creates internal-only IP
+  # This service is ONLY accessible from within the cluster
+  type: ClusterIP
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # selector: Label selector for target pods
+  # ───────────────────────────────────────────────────────────────────────────
+  # Traffic is routed to ALL pods matching these labels
+  # MUST match labels in Deployment's pod template
+  selector:
+    app: backend
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ports: Port configuration
+  # ───────────────────────────────────────────────────────────────────────────
+  ports:
+    - name: http # Port name (useful for referencing)
+      protocol: TCP # TCP or UDP
+      port: 80 # SERVICE port (what clients connect to)
+      targetPort: 80 # POD port (where traffic is forwarded)
+      # targetPort can also reference named port:
+      # targetPort: http   # References container port named "http"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Optional: Specify a ClusterIP
+  # ───────────────────────────────────────────────────────────────────────────
+  # By default, Kubernetes assigns a random IP from the service CIDR
+  # You can specify one if you need a consistent internal IP
+  # clusterIP: 10.96.0.50
+  #
+  # For headless service (StatefulSets, direct pod access):
+  # clusterIP: None
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Optional: Session affinity
+  # ───────────────────────────────────────────────────────────────────────────
+  # None (default): Round-robin load balancing
+  # ClientIP: Same client always connects to same pod
+  # sessionAffinity: ClientIP
+  # sessionAffinityConfig:
+  #   clientIP:
+  #     timeoutSeconds: 10800
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                     6. USEFUL KUBECTL COMMANDS                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# APPLY THIS FILE:
+# ────────────────
+#   kubectl apply -f service-clusterip.yaml
+#
+# VIEW RESOURCES:
+# ───────────────
+#   kubectl get deployments                    # List all deployments
+#   kubectl get pods -l app=backend            # List pods with label
+#   kubectl get services                       # List all services
+#   kubectl get endpoints backend-service      # View pod IPs behind service
+#
+# DESCRIBE (detailed info):
+# ─────────────────────────
+#   kubectl describe deployment backend
+#   kubectl describe service backend-service
+#   kubectl describe pod <pod-name>
+#
+# TEST THE SERVICE:
+# ─────────────────
+#   # From within a pod in the cluster:
+#   kubectl run test --rm -it --image=busybox --restart=Never -- sh
+#   wget -qO- http://backend-service:80
+#
+#   # Or use curl:
+#   kubectl run test --rm -it --image=curlimages/curl -- sh
+#   curl http://backend-service:80
+#
+# PORT FORWARD (access from localhost):
+# ─────────────────────────────────────
+#   kubectl port-forward service/backend-service 8080:80
+#   # Then access: http://localhost:8080
+#
+# DEBUG NETWORKING:
+# ─────────────────
+#   kubectl get endpoints                      # See which pods are registered
+#   kubectl exec -it <pod> -- nslookup backend-service  # Test DNS
+#   kubectl logs <pod>                         # View pod logs
+#
+# SCALE:
+# ──────
+#   kubectl scale deployment backend --replicas=5
+#
+# ROLLOUT:
+# ────────
+#   kubectl rollout status deployment/backend   # Watch rollout progress
+#   kubectl rollout history deployment/backend  # View rollout history
+#   kubectl rollout undo deployment/backend     # Rollback to previous version
+#
+# CLEANUP:
+# ────────
+#   kubectl delete -f service-clusterip.yaml
+#

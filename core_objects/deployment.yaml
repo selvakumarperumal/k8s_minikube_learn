@@ -1,0 +1,332 @@
+# =============================================================================
+# Kubernetes Deployment for FastAPI Application
+# =============================================================================
+# A Deployment provides declarative updates for Pods and ReplicaSets.
+# It manages the desired state of your application, handling:
+#   - Rolling updates and rollbacks
+#   - Scaling (horizontal pod scaling)
+#   - Self-healing (recreates failed pods)
+# =============================================================================
+#
+# DEPLOYMENT ARCHITECTURE DIAGRAM:
+# ================================
+#
+#   ┌─────────────────────────────────────────────────────────────────────────┐
+#   │                           DEPLOYMENT                                     │
+#   │                      (fastapi-deployment)                                │
+#   │                                                                          │
+#   │    ┌─────────────────────────────────────────────────────────────────┐  │
+#   │    │                       REPLICASET                                │  │
+#   │    │              (auto-created by Deployment)                       │  │
+#   │    │                                                                 │  │
+#   │    │   ┌─────────┐    ┌─────────┐    ┌─────────┐                    │  │
+#   │    │   │  POD 1  │    │  POD 2  │    │  POD 3  │   ← replicas: 3    │  │
+#   │    │   │         │    │         │    │         │                    │  │
+#   │    │   │┌───────┐│    │┌───────┐│    │┌───────┐│                    │  │
+#   │    │   ││fastapi││    ││fastapi││    ││fastapi││   ← Container      │  │
+#   │    │   ││ :8000 ││    ││ :8000 ││    ││ :8000 ││                    │  │
+#   │    │   │└───────┘│    │└───────┘│    │└───────┘│                    │  │
+#   │    │   └─────────┘    └─────────┘    └─────────┘                    │  │
+#   │    │        │              │              │                          │  │
+#   │    └────────┼──────────────┼──────────────┼──────────────────────────┘  │
+#   │             │              │              │                              │
+#   └─────────────┼──────────────┼──────────────┼──────────────────────────────┘
+#                 │              │              │
+#                 └──────────────┼──────────────┘
+#                                │
+#                    ┌───────────▼───────────┐
+#                    │       SERVICE         │
+#                    │   (Load Balancer)     │
+#                    │     ClusterIP/LB      │
+#                    └───────────────────────┘
+#                                │
+#                    ┌───────────▼───────────┐
+#                    │    EXTERNAL TRAFFIC   │
+#                    └───────────────────────┘
+#
+# =============================================================================
+#
+# ROLLING UPDATE FLOW:
+# ====================
+#
+#   STEP 1: Current State (replicas: 3)
+#   ┌─────────┐  ┌─────────┐  ┌─────────┐
+#   │ Pod v1  │  │ Pod v1  │  │ Pod v1  │
+#   │  (ok)   │  │  (ok)   │  │  (ok)   │
+#   └─────────┘  └─────────┘  └─────────┘
+#
+#   STEP 2: Update triggered (kubectl set image ... v2)
+#           maxSurge: 1, maxUnavailable: 0
+#   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐
+#   │ Pod v1  │  │ Pod v1  │  │ Pod v1  │  │ Pod v2  │ ← New pod created
+#   │  (ok)   │  │  (ok)   │  │  (ok)   │  │(starting)│
+#   └─────────┘  └─────────┘  └─────────┘  └─────────┘
+#
+#   STEP 3: New pod ready, old pod terminated
+#   ┌─────────┐  ┌─────────┐  ┌─────────┐
+#   │ Pod v1  │  │ Pod v1  │  │ Pod v2  │
+#   │  (ok)   │  │  (ok)   │  │  (ok)   │
+#   └─────────┘  └─────────┘  └─────────┘
+#
+#   STEP 4: Process repeats until all pods are v2
+#   ┌─────────┐  ┌─────────┐  ┌─────────┐
+#   │ Pod v2  │  │ Pod v2  │  │ Pod v2  │
+#   │  (ok)   │  │  (ok)   │  │  (ok)   │
+#   └─────────┘  └─────────┘  └─────────┘
+#
+# =============================================================================
+#
+# HEALTH CHECK FLOW:
+# ==================
+#
+#   Container Starts
+#         │
+#         ▼
+#   ┌─────────────────┐
+#   │ Wait for        │
+#   │ initialDelay    │──────► Liveness: 10s
+#   │                 │        Readiness: 5s
+#   └────────┬────────┘
+#            │
+#            ▼
+#   ┌─────────────────┐     ┌─────────────────┐
+#   │ Readiness Probe │────►│ PASS: Add to    │
+#   │ GET /health     │     │ Service         │
+#   └────────┬────────┘     │ endpoints       │
+#            │              └─────────────────┘
+#            │ FAIL
+#            ▼
+#   ┌─────────────────┐
+#   │ Remove from     │
+#   │ Service         │
+#   │ (no traffic)    │
+#   └─────────────────┘
+#
+#   ┌─────────────────┐     ┌─────────────────┐
+#   │ Liveness Probe  │────►│ PASS: Container │
+#   │ GET /health     │     │ is healthy      │
+#   └────────┬────────┘     └─────────────────┘
+#            │ FAIL (3x)
+#            ▼
+#   ┌─────────────────┐
+#   │ RESTART         │
+#   │ Container       │
+#   └─────────────────┘
+#
+# =============================================================================
+
+apiVersion: apps/v1 # API version for Deployment resource
+kind: Deployment # Resource type
+metadata:
+  name: fastapi-deployment # Unique name for this Deployment
+  labels:
+    app: fastapi # Labels for organizing and selecting resources
+  annotations:
+    description: "FastAPI application deployment"
+    version: "1.0"
+
+spec:
+  # ---------------------------------------------------------------------------
+  # REPLICAS: Number of identical pods to maintain
+  # ---------------------------------------------------------------------------
+  # Kubernetes ensures this many pods are always running.
+  # If a pod fails, a new one is automatically created.
+  replicas: 3
+
+  # ---------------------------------------------------------------------------
+  # STRATEGY: How to replace old pods with new ones during updates
+  # ---------------------------------------------------------------------------
+  # Two strategies available:
+  #   1. RollingUpdate (default): Gradually replace pods one at a time
+  #   2. Recreate: Kill all existing pods before creating new ones
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge: Maximum number of pods that can be created above desired count
+      # Can be absolute number (1) or percentage (25%)
+      # Higher value = faster rollout but more resources used temporarily
+      maxSurge: 1
+
+      # maxUnavailable: Maximum number of pods that can be unavailable during update
+      # Setting to 0 ensures zero downtime (always have full capacity)
+      # Trade-off: slower rollout but guaranteed availability
+      maxUnavailable: 0
+
+  # ---------------------------------------------------------------------------
+  # SELECTOR: How the Deployment finds which Pods to manage
+  # ---------------------------------------------------------------------------
+  # Must match the labels in the Pod template below
+  # This creates the link between Deployment and its Pods
+  selector:
+    matchLabels:
+      app: fastapi
+
+  # ---------------------------------------------------------------------------
+  # TEMPLATE: Pod specification - defines what each pod looks like
+  # ---------------------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        app: fastapi # Must match selector.matchLabels above!
+    spec:
+      containers:
+        - name: fastapi
+          image: fastapi_app:v1 # Container image (tag v1 for versioning)
+          imagePullPolicy: Never # Never = use local image (for Minikube)
+          # Other options: Always, IfNotPresent
+
+          # -------------------------------------------------------------------
+          # PORTS: Expose container ports
+          # -------------------------------------------------------------------
+          ports:
+            - containerPort: 80 # Port the app listens on inside container
+              name: http # Named port for easier reference in Services
+
+          # -------------------------------------------------------------------
+          # HEALTH CHECKS: Kubernetes uses these to manage pod lifecycle
+          # -------------------------------------------------------------------
+
+          # LIVENESS PROBE: Is the container still running?
+          # If this fails, Kubernetes RESTARTS the container
+          # Use case: Detect deadlocks, infinite loops, stuck processes
+          livenessProbe:
+            httpGet:
+              path: /health # Endpoint to check
+              port: 80 # Port to check on
+            initialDelaySeconds: 10 # Wait before first check (app startup time)
+            periodSeconds: 10 # How often to check
+
+          # READINESS PROBE: Is the container ready to accept traffic?
+          # If this fails, pod is removed from Service endpoints (no traffic)
+          # Use case: Waiting for dependencies, warming up caches
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5 # Usually shorter than liveness
+            periodSeconds: 5 # Check more frequently for quick recovery
+
+          # -------------------------------------------------------------------
+          # RESOURCES: CPU and Memory allocation
+          # -------------------------------------------------------------------
+          # requests: Guaranteed minimum resources (used for scheduling)
+          # limits: Maximum resources allowed (prevents resource hogging)
+          resources:
+            requests:
+              cpu: "100m" # 100 millicores = 0.1 CPU core
+              memory: "128Mi" # 128 Mebibytes
+            limits:
+              cpu: "500m" # Max 0.5 CPU core (throttled if exceeded)
+              memory: "256Mi" # Max 256Mi (OOMKilled if exceeded)
+
+# =============================================================================
+# USEFUL COMMANDS:
+# =============================================================================
+# Deploy:           kubectl apply -f deployment.yaml
+# Check status:     kubectl rollout status deployment/fastapi-deployment
+# View pods:        kubectl get pods -l app=fastapi
+# Scale:            kubectl scale deployment/fastapi-deployment --replicas=5
+# Update image:     kubectl set image deployment/fastapi-deployment fastapi=fastapi-app:v2
+# Rollback:         kubectl rollout undo deployment/fastapi-deployment
+# View history:     kubectl rollout history deployment/fastapi-deployment
+# =============================================================================
+
+---
+# =============================================================================
+# Kubernetes Service for FastAPI Application
+# =============================================================================
+# A Service provides a stable network endpoint to access Pods.
+# It enables:
+#   - Service discovery (DNS-based)
+#   - Load balancing across pods
+#   - Stable IP/port even when pods are recreated
+# =============================================================================
+#
+# SERVICE TYPES COMPARISON:
+# =========================
+#
+#   ClusterIP (default)        NodePort                   LoadBalancer
+#   ─────────────────────      ────────────────────       ─────────────────────
+#   Internal only              Exposes on node IP         Cloud load balancer
+#   Best for: inter-service    Best for: dev/testing      Best for: production
+#
+#               ┌──────────────────────────────────────────────────────┐
+#               │                    CLUSTER                           │
+#   EXTERNAL    │   ┌─────────────────────────────────────────────┐   │
+#   TRAFFIC     │   │               SERVICE                        │   │
+#      │        │   │         (fastapi-service)                    │   │
+#      │        │   │                                              │   │
+#      │        │   │  ClusterIP: 10.96.x.x:80 (internal)          │   │
+#      │        │   │  NodePort:  <NodeIP>:30080 (external)        │   │
+#      │        │   │                                              │   │
+#      │        │   └──────────────────┬───────────────────────────┘   │
+#      │        │                      │ Load Balance                  │
+#      │        │        ┌─────────────┼─────────────┐                 │
+#      ▼        │        ▼             ▼             ▼                 │
+#   NodePort    │   ┌─────────┐   ┌─────────┐   ┌─────────┐           │
+#   :30080  ────┼──►│  Pod 1  │   │  Pod 2  │   │  Pod 3  │           │
+#               │   │  :80    │   │  :80    │   │  :80    │           │
+#               │   └─────────┘   └─────────┘   └─────────┘           │
+#               │        ▲             ▲             ▲                 │
+#               │        └─────────────┴─────────────┘                 │
+#               │              selector: app=fastapi                   │
+#               └──────────────────────────────────────────────────────┘
+#
+# PORT MAPPING DIAGRAM:
+# =====================
+#
+#   External Request ──► NodePort (30080) ──► Service Port (80) ──► Pod Port (80)
+#
+#   ┌────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌──────────┐
+#   │  Browser   │────►│  Node:30080     │────►│  Service:80     │────►│ Pod:80   │
+#   │  curl      │     │  (nodePort)     │     │  (port)         │     │(targetPort)
+#   └────────────┘     └─────────────────┘     └─────────────────┘     └──────────┘
+#
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: fastapi-service
+  labels:
+    app: fastapi
+  annotations:
+    description: "Service to expose FastAPI deployment"
+spec:
+  # ---------------------------------------------------------------------------
+  # TYPE: How the service is exposed
+  # ---------------------------------------------------------------------------
+  # ClusterIP:    Internal only (default). Accessible within cluster
+  # NodePort:     Exposes on each Node's IP at a static port (30000-32767)
+  # LoadBalancer: Provisions external load balancer (cloud providers)
+  # ExternalName: Maps to external DNS name
+  type: NodePort
+
+  # ---------------------------------------------------------------------------
+  # SELECTOR: Which pods receive traffic from this service
+  # ---------------------------------------------------------------------------
+  # Must match labels on the pods (from Deployment template.metadata.labels)
+  selector:
+    app: fastapi
+
+  # ---------------------------------------------------------------------------
+  # PORTS: Port mapping configuration
+  # ---------------------------------------------------------------------------
+  ports:
+    - name: http # Name for this port (useful for multi-port services)
+      protocol: TCP # TCP or UDP
+      port: 80 # Port exposed by the Service (internal cluster port)
+      targetPort: 80 # Port on the Pod to forward traffic to
+      nodePort:
+        30080 # External port on each Node (30000-32767 range)
+        # If not specified, Kubernetes assigns one automatically
+# =============================================================================
+# SERVICE COMMANDS:
+# =============================================================================
+# Create service:     kubectl apply -f deployment.yaml
+# Get service:        kubectl get svc fastapi-service
+# Describe service:   kubectl describe svc fastapi-service
+# Get endpoints:      kubectl get endpoints fastapi-service
+# Access in Minikube: minikube service fastapi-service --url
+# Test connection:    curl $(minikube ip):30080
+# =============================================================================

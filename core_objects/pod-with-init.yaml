@@ -1,0 +1,118 @@
+# =============================================================================
+# POD WITH INIT CONTAINER
+# =============================================================================
+# Init containers run BEFORE the main application containers start.
+# They are used for setup tasks like downloading configs, waiting for
+# dependencies, or preparing data.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-init
+spec:
+  # ===========================================================================
+  # INIT CONTAINERS - Run sequentially before main containers
+  # ===========================================================================
+  # Key characteristics:
+  #   - Run to COMPLETION before main containers start
+  #   - Run in ORDER (one after another, not parallel)
+  #   - If ANY init container fails, the Pod restarts
+  #   - Can have different images than main containers
+  #   - Share volumes with main containers for data passing
+  #
+  # Common use cases:
+  #   - Wait for a database/service to be ready
+  #   - Clone a git repo for the main app
+  #   - Download configuration files
+  #   - Run database migrations
+  #   - Set file permissions
+  initContainers:
+    - name: init-container
+      image: busybox # Lightweight image for simple tasks
+      command:
+        - sh
+        - -c
+        - |
+          echo "Init container starting..."
+          echo "Preparing data for main container"
+          echo "Hello from init container" > /data/message.txt
+          echo "Init container completed!"
+      # Mount shared volume to pass data to main container
+      volumeMounts:
+        - name: shared-data
+          mountPath: /data
+
+  # ===========================================================================
+  # MAIN CONTAINERS - Start after ALL init containers complete
+  # ===========================================================================
+  containers:
+    - name: main-container
+      image: busybox
+      command:
+        - sh
+        - -c
+        - |
+          echo "Main container starting..."
+          echo "Reading data from init container:"
+          cat /data/message.txt
+          echo "Main container running - sleeping..."
+          sleep 3600  # Keep container running for demonstration
+
+      # Resource management (prevents noisy neighbor issues)
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "250m"
+
+      # Access the same volume that init container wrote to
+      volumeMounts:
+        - name: shared-data
+          mountPath: /data
+
+  # ===========================================================================
+  # VOLUMES - Shared storage between init and main containers
+  # ===========================================================================
+  volumes:
+    - name: shared-data
+      emptyDir: {} # Temporary directory that exists as long as Pod runs
+        # Data is lost when Pod is deleted
+# =============================================================================
+# INIT CONTAINER EXECUTION FLOW:
+# =============================================================================
+#
+#   Pod Scheduled to Node
+#           │
+#           ▼
+#   ┌───────────────────┐
+#   │  Init Container 1 │───▶ Runs to completion
+#   └─────────┬─────────┘
+#             │ Success
+#             ▼
+#   ┌───────────────────┐
+#   │  Init Container 2 │───▶ Runs to completion (if defined)
+#   └─────────┬─────────┘
+#             │ Success
+#             ▼
+#   ┌───────────────────┐
+#   │  Main Containers  │───▶ All start together (parallel)
+#   └───────────────────┘
+#
+# =============================================================================
+# INIT VS MAIN CONTAINERS:
+# =============================================================================
+#
+#   ┌─────────────────┬─────────────────────┬─────────────────────┐
+#   │    Feature      │    Init Container   │    Main Container   │
+#   ├─────────────────┼─────────────────────┼─────────────────────┤
+#   │ Runs when       │ Before main starts  │ After init completes│
+#   │ Runs how        │ Sequentially        │ In parallel         │
+#   │ Expected state  │ Exit after task     │ Run continuously    │
+#   │ On failure      │ Pod restarts        │ Based on policy     │
+#   │ Probes          │ No health probes    │ Has probes          │
+#   │ Resource limits │ Optional            │ Recommended         │
+#   └─────────────────┴─────────────────────┴─────────────────────┘
+#
+# =============================================================================

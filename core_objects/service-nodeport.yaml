@@ -1,0 +1,262 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║           KUBERNETES NODEPORT SERVICE - COMPLETE LEARNING GUIDE           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This file demonstrates:
+# 1. A Deployment that creates 3 replicas of a FastAPI backend
+# 2. A NodePort Service that exposes those pods EXTERNALLY via a static port
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                          TABLE OF CONTENTS                                  │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │  1. NodePort vs ClusterIP Comparison                                        │
+# │  2. Architecture Flow Diagram                                               │
+# │  3. Port Mapping Explained                                                  │
+# │  4. Resource Relationship                                                   │
+# │  5. Deployment Manifest                                                     │
+# │  6. Service Manifest                                                        │
+# │  7. Useful kubectl Commands                                                 │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                   1. NODEPORT VS CLUSTERIP COMPARISON                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   ┌────────────────────┬──────────────────────────────────────────────────────┐
+#   │   Service Type     │   Description                                        │
+#   ├────────────────────┼──────────────────────────────────────────────────────┤
+#   │   ClusterIP        │ • Default service type                               │
+#   │                    │ • Internal-only access (within cluster)              │
+#   │                    │ • Gets a virtual IP from cluster IP range            │
+#   │                    │ • Use for: backend services, databases               │
+#   ├────────────────────┼──────────────────────────────────────────────────────┤
+#   │   NodePort         │ • Extends ClusterIP                                  │
+#   │   (THIS FILE)      │ • Exposes service on EACH Node's IP                  │
+#   │                    │ • Opens static port (30000-32767) on all nodes       │
+#   │                    │ • Use for: dev/test, simple external access          │
+#   ├────────────────────┼──────────────────────────────────────────────────────┤
+#   │   LoadBalancer     │ • Extends NodePort                                   │
+#   │                    │ • Provisions cloud load balancer (AWS/GCP/Azure)     │
+#   │                    │ • Use for: production external access                │
+#   └────────────────────┴──────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      2. ARCHITECTURE FLOW DIAGRAM                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   EXTERNAL WORLD (Browser/Client/curl)
+#           │
+#           │ HTTP Request to <NodeIP>:30008
+#           │ Example: curl http://192.168.49.2:30008
+#           ▼
+#   ┌───────────────────────────────────────────────────────────────────────┐
+#   │                         KUBERNETES CLUSTER                            │
+#   │                                                                       │
+#   │  ┌─────────────────────────────────────────────────────────────────┐  │
+#   │  │                    NODE 1 (Worker Machine)                      │  │
+#   │  │                    IP: 192.168.49.2                             │  │
+#   │  │                                                                 │  │
+#   │  │   ┌─────────────────────────────────────────────────────────┐   │  │
+#   │  │   │              NodePort: 30008                            │   │  │
+#   │  │   │   (Port opened on ALL nodes in the cluster)             │   │  │
+#   │  │   └──────────────────────────┬──────────────────────────────┘   │  │
+#   │  │                              │                                  │  │
+#   │  │                              ▼                                  │  │
+#   │  │   ┌─────────────────────────────────────────────────────────┐   │  │
+#   │  │   │            SERVICE: fastapi-service                     │   │  │
+#   │  │   │            ────────────────────────                     │   │  │
+#   │  │   │            Type: NodePort                               │   │  │
+#   │  │   │            ClusterIP: 10.96.x.x (auto-assigned)         │   │  │
+#   │  │   │            Port: 80                                     │   │  │
+#   │  │   │            NodePort: 30008                              │   │  │
+#   │  │   │            Selector: app=fastapi                        │   │  │
+#   │  │   └──────────────────────────┬──────────────────────────────┘   │  │
+#   │  │                              │                                  │  │
+#   │  │          ┌───────────────────┼───────────────────┐              │  │
+#   │  │          │  kube-proxy       │ (load balancing)  │              │  │
+#   │  │          │                   │                   │              │  │
+#   │  │          ▼                   ▼                   ▼              │  │
+#   │  │   ┌───────────┐       ┌───────────┐       ┌───────────┐         │  │
+#   │  │   │   POD 1   │       │   POD 2   │       │   POD 3   │         │  │
+#   │  │   │ ───────── │       │ ───────── │       │ ───────── │         │  │
+#   │  │   │ app=      │       │ app=      │       │ app=      │         │  │
+#   │  │   │ fastapi   │       │ fastapi   │       │ fastapi   │         │  │
+#   │  │   │           │       │           │       │           │         │  │
+#   │  │   │ ┌───────┐ │       │ ┌───────┐ │       │ ┌───────┐ │         │  │
+#   │  │   │ │fastapi│ │       │ │fastapi│ │       │ │fastapi│ │         │  │
+#   │  │   │ │ :80   │ │       │ │ :80   │ │       │ │ :80   │ │         │  │
+#   │  │   │ └───────┘ │       │ └───────┘ │       │ └───────┘ │         │  │
+#   │  │   │           │       │           │       │           │         │  │
+#   │  │   │ IP:       │       │ IP:       │       │ IP:       │         │  │
+#   │  │   │ 10.244.x.1│       │ 10.244.x.2│       │ 10.244.x.3│         │  │
+#   │  │   └───────────┘       └───────────┘       └───────────┘         │  │
+#   │  │                                                                 │  │
+#   │  └─────────────────────────────────────────────────────────────────┘  │
+#   │                                                                       │
+#   └───────────────────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       3. PORT MAPPING EXPLAINED                           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   There are THREE ports to understand in a NodePort Service:
+#
+#   ┌──────────────┬─────────┬───────────────────────────────────────────────┐
+#   │  Port Name   │  Value  │  Description                                  │
+#   ├──────────────┼─────────┼───────────────────────────────────────────────┤
+#   │  nodePort    │  30008  │  External access port on each Node's IP      │
+#   │              │         │  Range: 30000-32767 (configurable)            │
+#   │              │         │  Access: <NodeIP>:30008                       │
+#   ├──────────────┼─────────┼───────────────────────────────────────────────┤
+#   │  port        │  80     │  Service's internal ClusterIP port            │
+#   │              │         │  Used within cluster: service-name:80         │
+#   │              │         │  This is what internal clients connect to     │
+#   ├──────────────┼─────────┼───────────────────────────────────────────────┤
+#   │  targetPort  │  80     │  Container port inside the Pod                │
+#   │              │         │  Must match containerPort in Deployment       │
+#   │              │         │  Where the actual application listens         │
+#   └──────────────┴─────────┴───────────────────────────────────────────────┘
+#
+#   Traffic Flow:
+#
+#   External Client ──► NodeIP:30008 ──► Service:80 ──► Pod:80 (container)
+#                       (nodePort)       (port)        (targetPort)
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       4. RESOURCE RELATIONSHIP                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   ┌────────────────────┐        creates         ┌────────────────────┐
+#   │    DEPLOYMENT      │ ─────────────────────► │    REPLICASET      │
+#   │    "backend"       │                        │  (auto-generated)  │
+#   │                    │                        │                    │
+#   │ spec.replicas: 3   │                        │                    │
+#   │ spec.selector:     │                        │                    │
+#   │   app: fastapi     │                        │                    │
+#   └────────────────────┘                        └─────────┬──────────┘
+#                                                           │
+#                                                           │ creates
+#                                                           ▼
+#                                               ┌─────────────────────┐
+#                                               │       PODS          │
+#                                               │   (3 replicas)      │
+#                                               │                     │
+#                                               │ labels:             │
+#                                               │   app: fastapi      │
+#                                               └──────────┬──────────┘
+#                                                          │
+#                            selects via label selector    │
+#                 ┌────────────────────────────────────────┘
+#                 │
+#                 ▼
+#   ┌────────────────────┐
+#   │      SERVICE       │
+#   │  "fastapi-service" │
+#   │                    │
+#   │ Type: NodePort     │
+#   │ selector:          │
+#   │   app: fastapi     │──────► Matches Pods with label app=fastapi
+#   │                    │
+#   │ nodePort: 30008    │──────► External access port
+#   └────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         5. DEPLOYMENT MANIFEST                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# For detailed Deployment documentation, see: deployment.yaml
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: fastapi
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fastapi
+  template:
+    metadata:
+      labels:
+        app: fastapi
+    spec:
+      containers:
+        - name: fastapi
+          image: fastapi_app:v1
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "256m"
+            limits:
+              memory: "128Mi"
+              cpu: "512m"
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                          6. SERVICE MANIFEST                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# For ClusterIP Service documentation, see: service-clusterip.yaml
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: fastapi-service
+spec:
+  type: NodePort
+  selector:
+    app: fastapi
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      nodePort: 30008
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       7. USEFUL KUBECTL COMMANDS                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# DEPLOYMENT:
+#   kubectl apply -f service-nodeport.yaml
+#   kubectl delete -f service-nodeport.yaml
+#
+# VERIFICATION:
+#   kubectl get deployments
+#   kubectl get pods -l app=fastapi
+#   kubectl get services
+#   kubectl describe service fastapi-service
+#
+# GET ENDPOINTS (shows which pods the service is routing to):
+#   kubectl get endpoints fastapi-service
+#
+# ACCESS (Minikube):
+#   minikube service fastapi-service
+#   minikube service fastapi-service --url
+#   minikube ip    # Then access http://<NodeIP>:30008
+#
+# ACCESS (Standard Kubernetes):
+#   kubectl get nodes -o wide    # Get Node IPs
+#   curl http://<NodeIP>:30008
+#
+# DEBUGGING:
+#   kubectl logs -l app=fastapi
+#   kubectl exec -it <pod-name> -- /bin/sh
+#   kubectl port-forward service/fastapi-service 8080:80
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           RELATED FILES                                   ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║  • deployment.yaml       - Detailed Deployment documentation              ║
+# ║  • service-clusterip.yaml - ClusterIP Service (internal only)             ║
+# ║  • replicaset.yaml       - ReplicaSet documentation                       ║
+# ║  • simple_pod.yaml       - Basic Pod documentation                        ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+

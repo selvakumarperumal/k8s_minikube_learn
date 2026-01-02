@@ -187,12 +187,80 @@ spec:
 #
 # LoadBalancer Service - Provisions external load balancer
 #
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                         SESSION AFFINITY EXPLAINED                          │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │                                                                             │
+# │  sessionAffinity controls how requests are distributed across pods:        │
+# │                                                                             │
+# │  ┌──────────────┬──────────────────────────────────────────────────────┐   │
+# │  │   Option     │   Behavior                                           │   │
+# │  ├──────────────┼──────────────────────────────────────────────────────┤   │
+# │  │   None       │ • Round-robin load balancing                         │   │
+# │  │  (Default)   │ • Each request can go to any pod                     │   │
+# │  │              │ • Best for stateless applications                    │   │
+# │  │              │ • Maximizes load distribution                        │   │
+# │  ├──────────────┼──────────────────────────────────────────────────────┤   │
+# │  │   ClientIP   │ • Sticky sessions based on client IP                 │   │
+# │  │              │ • Same client always goes to same pod                │   │
+# │  │              │ • Useful for stateful apps (sessions, caches)        │   │
+# │  │              │ • Can cause uneven load distribution                 │   │
+# │  └──────────────┴──────────────────────────────────────────────────────┘   │
+# │                                                                             │
+# │  WHEN TO USE ClientIP:                                                      │
+# │    ✓ User sessions stored in pod memory (not recommended pattern)          │
+# │    ✓ WebSocket connections that need consistency                           │
+# │    ✓ Shopping carts stored locally in pods                                 │
+# │    ✓ File upload sessions that span multiple requests                      │
+# │                                                                             │
+# │  WHEN TO USE None:                                                          │
+# │    ✓ Stateless REST APIs (recommended)                                     │
+# │    ✓ Microservices with external state (databases, Redis)                  │
+# │    ✓ Better load distribution across pods                                  │
+# │    ✓ Easier horizontal scaling                                             │
+# │                                                                             │
+# │  EXAMPLE SCENARIOS:                                                         │
+# │                                                                             │
+# │    sessionAffinity: None                                                    │
+# │    ────────────────────────                                                 │
+# │    Request 1 from 192.168.1.100 → Pod A                                    │
+# │    Request 2 from 192.168.1.100 → Pod B  (different pod!)                  │
+# │    Request 3 from 192.168.1.100 → Pod C  (different pod!)                  │
+# │                                                                             │
+# │    sessionAffinity: ClientIP                                                │
+# │    ────────────────────────────                                             │
+# │    Request 1 from 192.168.1.100 → Pod A                                    │
+# │    Request 2 from 192.168.1.100 → Pod A  (same pod!)                       │
+# │    Request 3 from 192.168.1.100 → Pod A  (same pod!)                       │
+# │                                                                             │
+# │  TESTING LOAD BALANCING:                                                    │
+# │    # With sessionAffinity: None, you'll see requests distributed           │
+# │    for i in {1..20}; do curl http://localhost:8080; done                   │
+# │                                                                             │
+# │    # Check which pods received requests:                                   │
+# │    kubectl logs -l app=fastapi --tail=20 --prefix                          │
+# │                                                                             │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
 apiVersion: v1
 kind: Service
 metadata:
   name: fastapi-lb-service
 spec:
   type: LoadBalancer
+
+  # sessionAffinity: None enables round-robin load balancing
+  # This means each request can go to any available pod
+  # Best for stateless applications like REST APIs
+  sessionAffinity: None
+
+  # Alternative: sessionAffinity: ClientIP
+  # Uncomment below to enable sticky sessions (same client → same pod)
+  # sessionAffinity: ClientIP
+  # sessionAffinityConfig:
+  #   clientIP:
+  #     timeoutSeconds: 10800  # Session timeout (default: 3 hours)
+
   selector:
     app: fastapi
   ports:

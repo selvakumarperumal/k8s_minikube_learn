@@ -1,0 +1,393 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║              KUBERNETES JOB - COMPLETE LEARNING GUIDE                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This file demonstrates:
+# 1. Simple Job - Runs once to completion
+# 2. Parallel Jobs - Multiple pods running in parallel
+# 3. Sequential Jobs - Multiple completions one after another
+# 4. Job with retry logic and backoff
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                          TABLE OF CONTENTS                                  │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │  1. What is a Job?                                                          │
+# │  2. Job vs Deployment vs CronJob                                            │
+# │  3. Job Patterns & Use Cases                                                │
+# │  4. Job Lifecycle & States                                                  │
+# │  5. Simple Job Example                                                      │
+# │  6. Parallel Job Example                                                    │
+# │  7. Job with Retry Logic                                                    │
+# │  8. Useful kubectl Commands                                                 │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           1. WHAT IS A JOB?                               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   A Job creates one or more Pods and ensures they successfully terminate.
+#   Unlike Deployments (which keep pods running forever), Jobs run to completion.
+#
+#   KEY CHARACTERISTICS:
+#   ✓ Runs until successful completion
+#   ✓ Automatically retries on failure
+#   ✓ Can run multiple pods in parallel
+#   ✓ Tracks completion count
+#   ✓ Pods are NOT deleted after completion (for log inspection)
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                  2. JOB VS DEPLOYMENT VS CRONJOB                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   ┌─────────────────┬──────────────────────────────────────────────────────┐
+#   │   Resource      │   Purpose                                            │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   Deployment    │ • Long-running applications (web servers, APIs)      │
+#   │                 │ • Keeps pods running continuously                    │
+#   │                 │ • Restarts pods if they crash                        │
+#   │                 │ • Use for: FastAPI, Nginx, databases                 │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   Job           │ • One-time tasks that run to completion             │
+#   │   (THIS FILE)   │ • Terminates after successful execution              │
+#   │                 │ • Retries on failure                                 │
+#   │                 │ • Use for: Data migration, batch processing          │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   CronJob       │ • Scheduled Jobs (like cron in Linux)                │
+#   │                 │ • Runs Jobs on a time-based schedule                 │
+#   │                 │ • Use for: Backups, reports, cleanup tasks           │
+#   └─────────────────┴──────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                    3. JOB PATTERNS & USE CASES                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   COMMON USE CASES:
+#   ─────────────────
+#   • Database migrations (run once during deployment)
+#   • Batch data processing (process files, generate reports)
+#   • ETL jobs (Extract, Transform, Load)
+#   • Image processing (resize, compress, convert)
+#   • Sending bulk emails or notifications
+#   • Data cleanup or archival tasks
+#   • Machine learning model training
+#
+#   JOB PATTERNS:
+#   ─────────────
+#
+#   1. SINGLE JOB (completions=1, parallelism=1)
+#      ┌─────┐
+#      │ Pod │ → Success → Job Complete
+#      └─────┘
+#
+#   2. PARALLEL JOBS (completions=5, parallelism=3)
+#      ┌─────┐ ┌─────┐ ┌─────┐
+#      │ Pod │ │ Pod │ │ Pod │ → 3 running at once
+#      └─────┘ └─────┘ └─────┘
+#      ┌─────┐ ┌─────┐
+#      │ Pod │ │ Pod │         → Next 2 start after first 3 complete
+#      └─────┘ └─────┘
+#
+#   3. WORK QUEUE PATTERN (completions=N, parallelism=M)
+#      Multiple workers process items from a shared queue
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      4. JOB LIFECYCLE & STATES                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   JOB STATES:
+#   ───────────
+#   1. Pending    → Job created, waiting for pod to start
+#   2. Running    → Pod(s) are executing
+#   3. Succeeded  → All pods completed successfully
+#   4. Failed     → Job failed after max retries (backoffLimit)
+#
+#   POD STATES IN A JOB:
+#   ────────────────────
+#   • Pending     → Waiting to be scheduled
+#   • Running     → Container is executing
+#   • Succeeded   → Container exited with code 0
+#   • Failed      → Container exited with non-zero code
+#   • Unknown     → Pod state cannot be determined
+#
+#   FLOW DIAGRAM:
+#   ─────────────
+#
+#   kubectl apply -f job.yaml
+#           │
+#           ▼
+#   ┌───────────────┐
+#   │  Job Created  │
+#   └───────┬───────┘
+#           │
+#           ▼
+#   ┌───────────────┐
+#   │  Pod Created  │
+#   └───────┬───────┘
+#           │
+#           ▼
+#   ┌───────────────┐      Success (exit 0)
+#   │ Pod Running   │──────────────────────┐
+#   └───────┬───────┘                      │
+#           │                              ▼
+#           │ Failure (exit 1)    ┌─────────────────┐
+#           └────────────────────▶│  Job Succeeded  │
+#                   │             └─────────────────┘
+#                   ▼
+#           ┌───────────────┐
+#           │ Retry (if     │
+#           │ backoffLimit  │
+#           │ not reached)  │
+#           └───────┬───────┘
+#                   │
+#                   ▼
+#           ┌───────────────┐
+#           │  Job Failed   │
+#           └───────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       5. SIMPLE JOB EXAMPLE                               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This Job runs a simple task once: prints a message and sleeps
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: simple-job
+  labels:
+    app: batch-processing
+spec:
+  # How many times the job should successfully complete
+  # Default: 1
+  completions: 1
+
+  # How many pods should run in parallel
+  # Default: 1
+  parallelism: 1
+
+  # Number of retries before marking job as failed
+  # Default: 6
+  backoffLimit: 3
+
+  # Time limit for job execution (in seconds)
+  # Job will be terminated if it runs longer than this
+  # Optional: Remove if you don't want a time limit
+  activeDeadlineSeconds: 300 # 5 minutes
+
+  # How long to keep completed job pods (for log inspection)
+  # After this time, pods are automatically deleted
+  # Default: Keep forever (not recommended for production)
+  ttlSecondsAfterFinished: 100
+
+  template:
+    metadata:
+      labels:
+        app: batch-processing
+    spec:
+      # restartPolicy for Jobs must be Never or OnFailure
+      # Never: Create new pod on failure
+      # OnFailure: Restart container in same pod on failure
+      restartPolicy: Never
+
+      containers:
+        - name: worker
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Job started at: $(date)"
+              echo "Processing data..."
+              sleep 10
+              echo "Job completed successfully at: $(date)"
+              exit 0  # Success
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      6. PARALLEL JOB EXAMPLE                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This Job runs 5 completions with 2 pods running in parallel at a time
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: parallel-job
+  labels:
+    app: parallel-processing
+spec:
+  # Total number of successful completions needed
+  completions: 5
+
+  # Maximum number of pods running at the same time
+  parallelism: 2
+
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 100
+
+  template:
+    metadata:
+      labels:
+        app: parallel-processing
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              WORKER_ID=$RANDOM
+              echo "Worker $WORKER_ID started at: $(date)"
+              echo "Processing batch data..."
+              sleep 15
+              echo "Worker $WORKER_ID completed at: $(date)"
+              exit 0
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                    7. JOB WITH RETRY LOGIC                                ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This Job demonstrates retry behavior with backoffLimit
+# It will fail a few times before succeeding
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: retry-job
+  labels:
+    app: retry-demo
+spec:
+  completions: 1
+  parallelism: 1
+
+  # Allow 4 retries before marking as failed
+  backoffLimit: 4
+
+  # Backoff delay increases exponentially: 10s, 20s, 40s, etc.
+  # Maximum backoff is 6 minutes
+
+  ttlSecondsAfterFinished: 100
+
+  template:
+    metadata:
+      labels:
+        app: retry-demo
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Attempt started at: $(date)"
+
+              # Simulate a task that might fail
+              RANDOM_NUM=$((RANDOM % 3))
+
+              if [ $RANDOM_NUM -eq 0 ]; then
+                echo "Success! Task completed."
+                exit 0
+              else
+                echo "Failed! Will retry..."
+                exit 1
+              fi
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       8. USEFUL KUBECTL COMMANDS                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# DEPLOYMENT:
+#   kubectl apply -f job.yaml
+#   kubectl delete -f job.yaml
+#
+# MONITORING:
+#   kubectl get jobs
+#   kubectl get jobs -w                    # Watch mode
+#   kubectl describe job simple-job
+#   kubectl get pods -l app=batch-processing
+#
+# CHECK JOB STATUS:
+#   kubectl get job simple-job -o yaml | grep -A 5 status
+#   kubectl get job simple-job -o jsonpath='{.status.succeeded}'
+#
+# VIEW LOGS:
+#   kubectl logs -l app=batch-processing
+#   kubectl logs job/simple-job            # All pods in the job
+#   kubectl logs <pod-name>                # Specific pod
+#
+# DEBUGGING:
+#   kubectl describe pod <pod-name>
+#   kubectl get events --sort-by=.metadata.creationTimestamp
+#
+# CLEANUP:
+#   kubectl delete job simple-job
+#   kubectl delete jobs --all              # Delete all jobs
+#
+# TESTING PARALLEL JOBS:
+#   # Watch pods being created and completed
+#   kubectl get pods -l app=parallel-processing -w
+#
+#   # Check how many completions
+#   kubectl get job parallel-job -o jsonpath='{.status.succeeded}/{.spec.completions}'
+#
+# MANUAL JOB CREATION FROM COMMAND LINE:
+#   kubectl create job test-job --image=busybox -- echo "Hello from Job"
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         ADVANCED PATTERNS                                 ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# WORK QUEUE PATTERN:
+# ───────────────────
+# Use when you have a queue of items to process:
+#   spec:
+#     completions: 10      # Process 10 items
+#     parallelism: 3       # 3 workers at a time
+#     template:
+#       spec:
+#         containers:
+#           - name: worker
+#             image: my-worker:latest
+#             env:
+#               - name: QUEUE_URL
+#                 value: "redis://queue-service:6379"
+#
+# INDEXED JOBS (Kubernetes 1.21+):
+# ────────────────────────────────
+# Each pod gets a unique index (0 to completions-1):
+#   spec:
+#     completionMode: Indexed
+#     completions: 5
+#     parallelism: 2
+#     template:
+#       spec:
+#         containers:
+#           - name: worker
+#             image: busybox
+#             command:
+#               - /bin/sh
+#               - -c
+#               - echo "Processing index $JOB_COMPLETION_INDEX"
+#
+# SUSPEND A JOB:
+# ──────────────
+#   spec:
+#     suspend: true    # Job won't create any pods until set to false
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           RELATED FILES                                   ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║  • cronjob.yaml          - Scheduled Jobs (time-based)                    ║
+# ║  • deployment.yaml       - Long-running applications                      ║
+# ║  • pod.yaml              - Single pod (no retry logic)                    ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝

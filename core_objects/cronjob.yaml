@@ -1,0 +1,512 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║            KUBERNETES CRONJOB - COMPLETE LEARNING GUIDE                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This file demonstrates:
+# 1. Basic CronJob - Scheduled task execution
+# 2. CronJob with concurrency control
+# 3. CronJob with history limits
+# 4. Real-world examples (backup, cleanup, reports)
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                          TABLE OF CONTENTS                                  │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │  1. What is a CronJob?                                                      │
+# │  2. Cron Schedule Syntax                                                    │
+# │  3. CronJob vs Job                                                          │
+# │  4. Concurrency Policies                                                    │
+# │  5. Basic CronJob Example                                                   │
+# │  6. Database Backup CronJob                                                 │
+# │  7. Cleanup CronJob                                                         │
+# │  8. Report Generation CronJob                                               │
+# │  9. Useful kubectl Commands                                                 │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         1. WHAT IS A CRONJOB?                             ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   A CronJob creates Jobs on a repeating schedule (like Linux cron).
+#   It's perfect for periodic tasks like backups, reports, and cleanup.
+#
+#   KEY CHARACTERISTICS:
+#   ✓ Runs Jobs on a time-based schedule
+#   ✓ Uses cron syntax for scheduling
+#   ✓ Can control concurrent execution
+#   ✓ Automatically manages Job history
+#   ✓ Can suspend/resume scheduling
+#
+#   ARCHITECTURE:
+#   ─────────────
+#
+#   CronJob (Schedule)
+#       │
+#       ├──▶ Job 1 (Created at scheduled time)
+#       │      └──▶ Pod 1 (Executes task)
+#       │
+#       ├──▶ Job 2 (Created at next scheduled time)
+#       │      └──▶ Pod 2 (Executes task)
+#       │
+#       └──▶ Job 3 (Created at next scheduled time)
+#              └──▶ Pod 3 (Executes task)
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      2. CRON SCHEDULE SYNTAX                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   CRON FORMAT:
+#   ────────────
+#   ┌───────────── minute (0 - 59)
+#   │ ┌───────────── hour (0 - 23)
+#   │ │ ┌───────────── day of month (1 - 31)
+#   │ │ │ ┌───────────── month (1 - 12)
+#   │ │ │ │ ┌───────────── day of week (0 - 6) (Sunday=0)
+#   │ │ │ │ │
+#   * * * * *
+#
+#   SPECIAL CHARACTERS:
+#   ───────────────────
+#   *     → Any value (every minute, every hour, etc.)
+#   ,     → List of values (1,15 = 1st and 15th)
+#   -     → Range of values (1-5 = 1,2,3,4,5)
+#   /     → Step values (*/5 = every 5 units)
+#
+#   COMMON EXAMPLES:
+#   ────────────────
+#   ┌─────────────────────┬──────────────────────────────────────────┐
+#   │   Schedule          │   Description                            │
+#   ├─────────────────────┼──────────────────────────────────────────┤
+#   │   */5 * * * *       │ Every 5 minutes                          │
+#   │   0 * * * *         │ Every hour (at minute 0)                 │
+#   │   0 0 * * *         │ Every day at midnight                    │
+#   │   0 2 * * *         │ Every day at 2:00 AM                     │
+#   │   0 0 * * 0         │ Every Sunday at midnight                 │
+#   │   0 0 1 * *         │ First day of every month at midnight     │
+#   │   0 9-17 * * 1-5    │ Every hour from 9 AM to 5 PM on weekdays │
+#   │   */10 * * * *      │ Every 10 minutes                         │
+#   │   0 */6 * * *       │ Every 6 hours                            │
+#   │   30 3 * * 1        │ Every Monday at 3:30 AM                  │
+#   │   0 0 1,15 * *      │ 1st and 15th of every month at midnight  │
+#   └─────────────────────┴──────────────────────────────────────────┘
+#
+#   TESTING SCHEDULES:
+#   ──────────────────
+#   Use https://crontab.guru/ to validate your cron expressions
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         3. CRONJOB VS JOB                                 ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   ┌─────────────────┬──────────────────────────────────────────────────────┐
+#   │   Resource      │   Purpose                                            │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   Job           │ • One-time task execution                            │
+#   │                 │ • Runs immediately when created                      │
+#   │                 │ • Manual triggering                                  │
+#   │                 │ • Use for: migrations, one-off batch processing      │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   CronJob       │ • Scheduled, recurring task execution               │
+#   │   (THIS FILE)   │ • Runs on a time-based schedule                      │
+#   │                 │ • Automatic triggering                               │
+#   │                 │ • Use for: backups, reports, cleanup, monitoring     │
+#   └─────────────────┴──────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      4. CONCURRENCY POLICIES                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   Controls what happens when a new Job is scheduled while previous Job is still running
+#
+#   ┌─────────────────┬──────────────────────────────────────────────────────┐
+#   │   Policy        │   Behavior                                           │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   Allow         │ • Default policy                                     │
+#   │   (Default)     │ • Allows concurrent Jobs to run                      │
+#   │                 │ • Multiple Jobs can run at the same time             │
+#   │                 │ • Use when: Tasks are independent                    │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   Forbid        │ • Skips new Job if previous is still running         │
+#   │                 │ • Only one Job runs at a time                        │
+#   │                 │ • New Job is skipped (not queued)                    │
+#   │                 │ • Use when: Tasks conflict with each other           │
+#   ├─────────────────┼──────────────────────────────────────────────────────┤
+#   │   Replace       │ • Cancels currently running Job                      │
+#   │                 │ • Starts new Job immediately                         │
+#   │                 │ • Use when: Only latest execution matters            │
+#   └─────────────────┴──────────────────────────────────────────────────────┘
+#
+#   EXAMPLE SCENARIOS:
+#   ──────────────────
+#
+#   Allow:
+#   ─────
+#   Time: 10:00 → Job 1 starts (takes 15 min)
+#   Time: 10:05 → Job 2 starts (both running)
+#   Time: 10:10 → Job 3 starts (all three running)
+#
+#   Forbid:
+#   ──────
+#   Time: 10:00 → Job 1 starts (takes 15 min)
+#   Time: 10:05 → Job 2 skipped (Job 1 still running)
+#   Time: 10:10 → Job 3 skipped (Job 1 still running)
+#   Time: 10:15 → Job 1 completes
+#   Time: 10:20 → Job 4 starts
+#
+#   Replace:
+#   ───────
+#   Time: 10:00 → Job 1 starts (takes 15 min)
+#   Time: 10:05 → Job 1 cancelled, Job 2 starts
+#   Time: 10:10 → Job 2 cancelled, Job 3 starts
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                     5. BASIC CRONJOB EXAMPLE                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# Simple CronJob that runs every minute
+#
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hello-cronjob
+  labels:
+    app: scheduled-task
+spec:
+  # Schedule in cron format
+  # This runs every minute
+  schedule: "*/1 * * * *"
+
+  # Timezone for the schedule (Kubernetes 1.25+)
+  # Optional: defaults to UTC
+  # timeZone: "Asia/Kolkata"
+
+  # Concurrency policy: Allow, Forbid, or Replace
+  concurrencyPolicy: Allow
+
+  # Number of successful Jobs to keep in history
+  successfulJobsHistoryLimit: 3
+
+  # Number of failed Jobs to keep in history
+  failedJobsHistoryLimit: 1
+
+  # Optional: Deadline for starting the job (in seconds)
+  # If job doesn't start within this time, it's counted as failed
+  startingDeadlineSeconds: 100
+
+  # Optional: Suspend scheduling (useful for maintenance)
+  # suspend: true
+
+  # Job template (same as Job spec)
+  jobTemplate:
+    metadata:
+      labels:
+        app: scheduled-task
+    spec:
+      # Time limit for job execution
+      activeDeadlineSeconds: 60
+
+      # Keep completed pods for 30 seconds
+      ttlSecondsAfterFinished: 30
+
+      template:
+        metadata:
+          labels:
+            app: scheduled-task
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: hello
+              image: busybox:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "CronJob executed at: $(date)"
+                  echo "Hello from Kubernetes CronJob!"
+                  sleep 5
+                  echo "Task completed successfully"
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                   6. DATABASE BACKUP CRONJOB                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# Runs daily at 2 AM to backup a database
+#
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup
+  labels:
+    app: backup
+    type: database
+spec:
+  # Every day at 2:00 AM
+  schedule: "0 2 * * *"
+
+  # Don't allow concurrent backups
+  concurrencyPolicy: Forbid
+
+  successfulJobsHistoryLimit: 7 # Keep 1 week of backups
+  failedJobsHistoryLimit: 3
+
+  startingDeadlineSeconds: 300 # Must start within 5 minutes
+
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600 # 1 hour timeout
+      ttlSecondsAfterFinished: 86400 # Keep for 24 hours
+
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: postgres:15-alpine
+              env:
+                - name: PGHOST
+                  value: "postgres-service"
+                - name: PGUSER
+                  value: "admin"
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: db-secret
+                      key: password
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  BACKUP_FILE="/backups/db-backup-$(date +%Y%m%d-%H%M%S).sql"
+                  echo "Starting database backup at: $(date)"
+
+                  # Create backup
+                  pg_dump -h $PGHOST -U $PGUSER mydb > $BACKUP_FILE
+
+                  if [ $? -eq 0 ]; then
+                    echo "Backup successful: $BACKUP_FILE"
+                    echo "Backup size: $(du -h $BACKUP_FILE | cut -f1)"
+                  else
+                    echo "Backup failed!"
+                    exit 1
+                  fi
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: backup-pvc
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      7. CLEANUP CRONJOB                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# Runs every 6 hours to clean up old files
+#
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup-old-files
+  labels:
+    app: cleanup
+spec:
+  # Every 6 hours
+  schedule: "0 */6 * * *"
+
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 1
+
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: busybox:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "Starting cleanup at: $(date)"
+
+                  # Delete files older than 7 days
+                  find /data/temp -type f -mtime +7 -delete
+
+                  # Delete empty directories
+                  find /data/temp -type d -empty -delete
+
+                  echo "Cleanup completed at: $(date)"
+
+                  # Show remaining disk space
+                  df -h /data
+              volumeMounts:
+                - name: data-volume
+                  mountPath: /data
+          volumes:
+            - name: data-volume
+              persistentVolumeClaim:
+                claimName: data-pvc
+
+---
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                   8. REPORT GENERATION CRONJOB                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# Generates weekly reports every Monday at 9 AM
+#
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weekly-report
+  labels:
+    app: reporting
+spec:
+  # Every Monday at 9:00 AM
+  schedule: "0 9 * * 1"
+
+  concurrencyPolicy: Replace # Cancel old report if still running
+  successfulJobsHistoryLimit: 4 # Keep 4 weeks
+  failedJobsHistoryLimit: 2
+
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800 # 30 minutes timeout
+      ttlSecondsAfterFinished: 604800 # Keep for 1 week
+
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: report-generator
+              image: python:3.11-slim
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  echo "Generating weekly report at: $(date)"
+
+                  # Install dependencies
+                  pip install pandas matplotlib > /dev/null 2>&1
+
+                  # Generate report (placeholder)
+                  python3 << 'EOF'
+                  import datetime
+                  print(f"Report for week ending: {datetime.date.today()}")
+                  print("=" * 50)
+                  print("Total users: 1,234")
+                  print("Active users: 987")
+                  print("Revenue: $12,345")
+                  print("=" * 50)
+                  EOF
+
+                  echo "Report generation completed at: $(date)"
+              env:
+                - name: REPORT_TYPE
+                  value: "weekly"
+                - name: OUTPUT_FORMAT
+                  value: "pdf"
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                       9. USEFUL KUBECTL COMMANDS                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# DEPLOYMENT:
+#   kubectl apply -f cronjob.yaml
+#   kubectl delete -f cronjob.yaml
+#
+# MONITORING:
+#   kubectl get cronjobs
+#   kubectl get cronjobs -w                # Watch mode
+#   kubectl describe cronjob hello-cronjob
+#
+# VIEW JOBS CREATED BY CRONJOB:
+#   kubectl get jobs
+#   kubectl get jobs -l app=scheduled-task
+#
+# VIEW PODS CREATED BY CRONJOB:
+#   kubectl get pods -l app=scheduled-task
+#
+# VIEW LOGS:
+#   kubectl logs -l app=scheduled-task
+#   kubectl logs job/hello-cronjob-<job-id>
+#
+# MANUALLY TRIGGER A CRONJOB (create Job from CronJob):
+#   kubectl create job manual-run --from=cronjob/hello-cronjob
+#
+# SUSPEND/RESUME CRONJOB:
+#   kubectl patch cronjob hello-cronjob -p '{"spec":{"suspend":true}}'
+#   kubectl patch cronjob hello-cronjob -p '{"spec":{"suspend":false}}'
+#
+# CHECK NEXT SCHEDULED TIME:
+#   kubectl get cronjob hello-cronjob -o jsonpath='{.status.lastScheduleTime}'
+#
+# DEBUGGING:
+#   kubectl describe cronjob hello-cronjob
+#   kubectl get events --sort-by=.metadata.creationTimestamp
+#
+# DELETE OLD JOBS MANUALLY:
+#   kubectl delete jobs -l app=scheduled-task
+#
+# VIEW CRONJOB SCHEDULE:
+#   kubectl get cronjob hello-cronjob -o yaml | grep schedule
+#
+# TESTING (for quick testing, use */1 * * * * to run every minute):
+#   # Create a test CronJob that runs every minute
+#   kubectl create cronjob test --image=busybox --schedule="*/1 * * * *" -- echo "Test"
+#
+#   # Watch it create jobs
+#   kubectl get jobs -w
+#
+#   # Clean up
+#   kubectl delete cronjob test
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         BEST PRACTICES                                    ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# 1. SET APPROPRIATE HISTORY LIMITS:
+#    • Don't keep too many old Jobs (wastes resources)
+#    • Keep enough for debugging (3-7 successful, 1-3 failed)
+#
+# 2. USE CONCURRENCY POLICIES WISELY:
+#    • Forbid: For database operations, backups
+#    • Allow: For independent tasks, logging
+#    • Replace: For reports where only latest matters
+#
+# 3. SET DEADLINES:
+#    • activeDeadlineSeconds: Prevent jobs from running forever
+#    • startingDeadlineSeconds: Handle missed schedules
+#
+# 4. USE TTL FOR CLEANUP:
+#    • ttlSecondsAfterFinished: Auto-delete completed pods
+#    • Prevents cluster clutter
+#
+# 5. TIMEZONE AWARENESS:
+#    • CronJobs use UTC by default
+#    • Set timeZone if you need specific timezone (K8s 1.25+)
+#
+# 6. IDEMPOTENCY:
+#    • Make sure jobs can be safely re-run
+#    • Handle partial failures gracefully
+#
+# 7. MONITORING:
+#    • Set up alerts for failed CronJobs
+#    • Monitor execution time trends
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           RELATED FILES                                   ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║  • job.yaml              - One-time batch jobs                            ║
+# ║  • deployment.yaml       - Long-running applications                      ║
+# ║  • configmap.yaml        - Configuration for jobs                         ║
+# ║  • secret.yaml           - Sensitive data (passwords, API keys)           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝

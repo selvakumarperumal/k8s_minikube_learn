@@ -512,37 +512,37 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph Step1["Step 1: DNS Lookup"]
+    subgraph Step1["🟠 Step 1: DNS Lookup"]
         C1[Client] -->|"postgres-lb?"| DNS1[CoreDNS]
         DNS1 -->|"10.96.100.50"| C1
     end
     
-    subgraph Step2["Step 2: Service Routing"]
+    subgraph Step2["🔵 Step 2: Service Routing"]
         C2[Client] -->|":5432"| SVC2[ClusterIP<br/>10.96.100.50]
     end
     
-    subgraph Step3["Step 3: Pod Selection"]
+    subgraph Step3["🟢 Step 3: Pod Selection"]
         SVC3[Service] -->|"iptables NAT"| LB3{Load<br/>Balancer}
         LB3 -->|"33%"| P0[postgres-0]
         LB3 -->|"33%"| P1[postgres-1]
         LB3 -->|"33%"| P2[postgres-2]
     end
     
-    subgraph Step4["Step 4: Data Access"]
+    subgraph Step4["🟡 Step 4: Data Access"]
         POD4[Selected Pod] -->|"Read/Write"| PVC4[PVC Storage]
     end
     
-    style C1 fill:#e1f5fe,stroke:#01579b
-    style C2 fill:#e1f5fe,stroke:#01579b
-    style DNS1 fill:#fff3e0,stroke:#e65100
-    style SVC2 fill:#fff3e0,stroke:#e65100
-    style SVC3 fill:#fff3e0,stroke:#e65100
-    style LB3 fill:#ffecb3,stroke:#ff8f00
-    style P0 fill:#c8e6c9,stroke:#2e7d32
-    style P1 fill:#bbdefb,stroke:#1565c0
-    style P2 fill:#bbdefb,stroke:#1565c0
-    style POD4 fill:#c8e6c9,stroke:#2e7d32
-    style PVC4 fill:#fff9c4,stroke:#f9a825
+    style C1 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style C2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style DNS1 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style SVC2 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style SVC3 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style LB3 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style P0 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style P1 fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style P2 fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style POD4 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style PVC4 fill:#f1fa8c,stroke:#6272a4,color:#282a36
 ```
 
 ### Two Ways to Connect
@@ -580,21 +580,24 @@ sequenceDiagram
 flowchart TD
     START{What's your<br/>use case?}
     
-    START -->|"General read/write"| LB[Use postgres-lb<br/>Load Balanced]
-    START -->|"Need specific pod"| DIRECT[Use postgres headless<br/>Direct Access]
+    START -->|"General read/write"| LB[🟢 Use postgres-lb<br/>Load Balanced]
+    START -->|"Need specific pod"| DIRECT[🔵 Use postgres headless<br/>Direct Access]
     START -->|"Database replication"| DIRECT
-    START -->|"Write to primary only"| PRIMARY[Connect to<br/>postgres-0.postgres]
-    START -->|"Read from replicas"| REPLICA[Connect to<br/>postgres-1.postgres<br/>or postgres-2.postgres]
+    START -->|"Write to primary only"| PRIMARY[🟢 Connect to<br/>postgres-0.postgres]
+    START -->|"Read from replicas"| REPLICA[🔵 Connect to<br/>postgres-1.postgres<br/>or postgres-2.postgres]
     
     LB --> LB_EX["postgresql://admin:pass@<br/>postgres-lb:5432/mydb"]
     PRIMARY --> PRIMARY_EX["postgresql://admin:pass@<br/>postgres-0.postgres:5432/mydb"]
     REPLICA --> REPLICA_EX["postgresql://admin:pass@<br/>postgres-1.postgres:5432/mydb"]
     
-    style START fill:#fff3e0,stroke:#e65100
-    style LB fill:#c8e6c9,stroke:#2e7d32
-    style DIRECT fill:#bbdefb,stroke:#1565c0
-    style PRIMARY fill:#c8e6c9,stroke:#2e7d32
-    style REPLICA fill:#bbdefb,stroke:#1565c0
+    style START fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style LB fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style DIRECT fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style PRIMARY fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style REPLICA fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style LB_EX fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style PRIMARY_EX fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style REPLICA_EX fill:#f1fa8c,stroke:#6272a4,color:#282a36
 ```
 
 ---

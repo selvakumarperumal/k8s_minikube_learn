@@ -359,31 +359,31 @@ graph TD
 
 ```mermaid
 graph TB
-    subgraph "External"
-        CLIENT[Client Application]
+    subgraph External["🌐 External"]
+        CLIENT[👤 Client Application]
     end
     
-    subgraph "Kubernetes Cluster"
-        subgraph "Services"
-            LB[postgres-lb<br/>ClusterIP: 10.96.x.x]
-            HEADLESS[postgres<br/>ClusterIP: None]
+    subgraph Cluster["☸️ Kubernetes Cluster"]
+        subgraph Services["🔗 Services"]
+            LB[📡 postgres-lb<br/>ClusterIP: 10.96.x.x]
+            HEADLESS[🔍 postgres<br/>ClusterIP: None]
         end
         
-        subgraph "Configuration"
-            CM[ConfigMap<br/>postgres-config]
-            SEC[Secret<br/>postgres-secret]
+        subgraph Config["⚙️ Configuration"]
+            CM[📋 ConfigMap<br/>postgres-config]
+            SEC[🔐 Secret<br/>postgres-secret]
         end
         
-        subgraph "StatefulSet: postgres"
-            POD0[postgres-0<br/>Primary]
-            POD1[postgres-1<br/>Replica]
-            POD2[postgres-2<br/>Replica]
+        subgraph STS["🗃️ StatefulSet: postgres"]
+            POD0[🟢 postgres-0<br/>Primary]
+            POD1[🔵 postgres-1<br/>Replica]
+            POD2[🔵 postgres-2<br/>Replica]
         end
         
-        subgraph "Persistent Storage"
-            PVC0[PVC-0<br/>2Gi]
-            PVC1[PVC-1<br/>2Gi]
-            PVC2[PVC-2<br/>2Gi]
+        subgraph Storage["💾 Persistent Storage"]
+            PVC0[📦 PVC-0<br/>2Gi]
+            PVC1[📦 PVC-1<br/>2Gi]
+            PVC2[📦 PVC-2<br/>2Gi]
         end
     end
     
@@ -407,7 +407,32 @@ graph TB
     POD0 --> PVC0
     POD1 --> PVC1
     POD2 --> PVC2
+
+    %% Styling
+    style CLIENT fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#01579b
+    style LB fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#e65100
+    style HEADLESS fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#e65100
+    style CM fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#7b1fa2
+    style SEC fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#c2185b
+    style POD0 fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px,color:#1b5e20
+    style POD1 fill:#bbdefb,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    style POD2 fill:#bbdefb,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    style PVC0 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#f57f17
+    style PVC1 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#f57f17
+    style PVC2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#f57f17
 ```
+
+### Color Legend
+
+| Color | Component Type | Description |
+|-------|---------------|-------------|
+| 🟦 Light Blue | Client | External application connecting to cluster |
+| 🟧 Orange | Services | Network endpoints (LoadBalancer & Headless) |
+| 🟪 Purple | ConfigMap | Non-sensitive configuration data |
+| 🟥 Pink | Secret | Sensitive data (passwords) |
+| 🟩 Green | Primary Pod | First pod (postgres-0), typically the leader |
+| 🔵 Blue | Replica Pods | Secondary pods (postgres-1, postgres-2) |
+| 🟨 Yellow | PVCs | Persistent storage volumes |
 
 ---
 

@@ -1,0 +1,233 @@
+# ==============================================================================
+# StatefulSet Update Strategy Demo
+# ==============================================================================
+#
+# This file demonstrates how StatefulSet update strategies work.
+# Use this to understand RollingUpdate, OnDelete, and Partition strategies.
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                      UPDATE STRATEGY OVERVIEW                               │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   RollingUpdate (Default):
+#   ─────────────────────────
+#   • Updates pods in REVERSE order (highest ordinal first)
+#   • myapp-2 → myapp-1 → myapp-0
+#   • Waits for each pod to be Ready before updating the next
+#   • Safe for stateful applications
+#
+#   OnDelete:
+#   ─────────
+#   • No automatic updates
+#   • Pods only update when manually deleted
+#   • Full control over update timing
+#   • Use when you need manual verification between updates
+#
+#   Partition (Canary Testing):
+#   ────────────────────────────
+#   • partition: N means only update pods with ordinal >= N
+#   • partition: 0 → Update all pods (default)
+#   • partition: 2 → Only update myapp-2 (test before rolling out)
+#   • partition: 1 → Update myapp-1 and myapp-2
+#
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                      ROLLING UPDATE FLOW                                    │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   kubectl set image statefulset/myapp nginx=nginx:1.21
+#
+#   Step 1: myapp-2 terminated
+#           ├─► myapp-2 recreated with nginx:1.21
+#           └─► Wait for Ready
+#
+#   Step 2: myapp-1 terminated
+#           ├─► myapp-1 recreated with nginx:1.21
+#           └─► Wait for Ready
+#
+#   Step 3: myapp-0 terminated
+#           ├─► myapp-0 recreated with nginx:1.21
+#           └─► Wait for Ready
+#
+#   Done! All pods updated.
+#
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                      PARTITION (CANARY) EXAMPLE                             │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   With partition: 2
+#
+#   After update:
+#   ┌──────────┬──────────────┐
+#   │ Pod      │ Image        │
+#   ├──────────┼──────────────┤
+#   │ myapp-0  │ nginx:1.20   │  ← Not updated (ordinal < 2)
+#   │ myapp-1  │ nginx:1.20   │  ← Not updated (ordinal < 2)
+#   │ myapp-2  │ nginx:1.21   │  ← Updated! (ordinal >= 2)
+#   └──────────┴──────────────┘
+#
+#   If myapp-2 works fine, reduce partition to 0 to update all.
+#
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. HEADLESS SERVICE
+# ------------------------------------------------------------------------------
+# Required for StatefulSet. Provides stable DNS names for each pod.
+# clusterIP: None means no load balancing - direct pod access via DNS.
+#
+# DNS format: <pod-name>.<service-name>.<namespace>.svc.cluster.local
+# Example:    myapp-0.app-service.default.svc.cluster.local
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+spec:
+  ports:
+    - port: 80
+  clusterIP: None # Headless Service (required for StatefulSet)
+  selector:
+    app: myapp # Selects pods with label app=myapp
+
+---
+# ------------------------------------------------------------------------------
+# 2. STATEFULSET
+# ------------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: myapp
+spec:
+  # ============================================================================
+  # SERVICE NAME - Must match headless service
+  # ============================================================================
+  serviceName: app-service
+
+  # ============================================================================
+  # REPLICAS - Number of pod instances
+  # ============================================================================
+  replicas: 3 # Creates: myapp-0, myapp-1, myapp-2
+
+  # ============================================================================
+  # UPDATE STRATEGY - How pods are updated when spec changes
+  # ============================================================================
+  #
+  # TYPE OPTIONS:
+  # ─────────────
+  # • RollingUpdate: Automatic rolling update (reverse order)
+  # • OnDelete:      Manual update (pods update only when deleted)
+  #
+  # PARTITION:
+  # ──────────
+  # • Only pods with ordinal >= partition get updated
+  # • Use for canary deployments / staged rollouts
+  # • Set to 0 to update all pods
+  #
+  updateStrategy:
+    type: RollingUpdate # Automatic updates in reverse order
+    rollingUpdate:
+      partition: 0 # Update all pods (ordinal >= 0)
+      # Examples:
+      # partition: 0 → Update all:      myapp-0, myapp-1, myapp-2
+      # partition: 1 → Update 2 pods:   myapp-1, myapp-2
+      # partition: 2 → Update 1 pod:    myapp-2 only (canary)
+      # partition: 3 → Update 0 pods:   None (pause updates)
+
+  # ============================================================================
+  # SELECTOR - How StatefulSet finds its pods
+  # ============================================================================
+  selector:
+    matchLabels:
+      app: myapp # Must match template.metadata.labels
+
+  # ============================================================================
+  # POD TEMPLATE - Blueprint for each pod
+  # ============================================================================
+  template:
+    metadata:
+      labels:
+        app: myapp # Must match selector.matchLabels
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.20 # Current version - update to test rolling update
+
+          ports:
+            - containerPort: 80
+
+          # Mount persistent volume
+          volumeMounts:
+            - name: data
+              mountPath: /data # Data persists across pod restarts
+
+  # ============================================================================
+  # VOLUME CLAIM TEMPLATES - Creates unique PVC for each pod
+  # ============================================================================
+  #
+  # Creates PVCs automatically:
+  #   data-myapp-0 (1Gi)
+  #   data-myapp-1 (1Gi)
+  #   data-myapp-2 (1Gi)
+  #
+  # PVCs are NOT deleted when:
+  #   • Pod is deleted
+  #   • Pod is updated
+  #   • StatefulSet is deleted
+  #
+  # This ensures data persistence across updates!
+  #
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"] # Single node read/write
+        resources:
+          requests:
+            storage: 1Gi
+# ==============================================================================
+# COMMANDS TO TEST UPDATE STRATEGIES
+# ==============================================================================
+#
+# Deploy:
+#   kubectl apply -f statefulset-update.yaml
+#
+# Wait for pods:
+#   kubectl wait --for=condition=ready pod -l app=myapp --timeout=60s
+#
+# Check current image:
+#   kubectl get pods -l app=myapp -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
+#
+# Trigger rolling update:
+#   kubectl set image statefulset/myapp nginx=nginx:1.21
+#
+# Watch update (reverse order):
+#   kubectl get pods -l app=myapp -w
+#
+# Check rollout status:
+#   kubectl rollout status statefulset/myapp
+#
+# ------------------------------------------------------------------------------
+# TEST PARTITION (CANARY):
+# ------------------------------------------------------------------------------
+#
+# Set partition to 2 (only update myapp-2):
+#   kubectl patch statefulset myapp -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":2}}}}'
+#
+# Update image:
+#   kubectl set image statefulset/myapp nginx=nginx:1.22
+#
+# Verify only myapp-2 updated:
+#   kubectl get pods -l app=myapp -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
+#
+# If satisfied, roll out to all:
+#   kubectl patch statefulset myapp -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":0}}}}'
+#
+# ------------------------------------------------------------------------------
+# CLEANUP:
+# ------------------------------------------------------------------------------
+#   kubectl delete -f statefulset-update.yaml
+#   kubectl delete pvc -l app=myapp
+#
+# ==============================================================================

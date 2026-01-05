@@ -1,0 +1,1789 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║        KUBERNETES LABELS AND SELECTORS - COMPLETE GUIDE                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# This file demonstrates:
+# 1. What are labels and selectors
+# 2. How they work with different components
+# 3. Practical examples with Pods, Deployments, Services, StatefulSets
+# 4. Label matching rules and best practices
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                          TABLE OF CONTENTS                                  │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │  1. What are Labels?                                                        │
+# │  2. What are Selectors?                                                     │
+# │  3. Labels and Selectors Architecture                                       │
+# │  4. How They Work Together                                                  │
+# │  5. COMPONENT-TO-COMPONENT INTERACTIONS (IMPORTANT!)                        │
+# │     ├─ Service + Pod                                                        │
+# │     ├─ Service + Deployment                                                 │
+# │     ├─ Service + StatefulSet                                                │
+# │     ├─ Deployment + ReplicaSet + Pod                                        │
+# │     └─ Complete Multi-Component Example                                     │
+# │  6. Labels in Pods                                                          │
+# │  7. Selectors in Services                                                   │
+# │  8. Labels and Selectors in Deployments                                     │
+# │  9. Labels and Selectors in StatefulSets                                    │
+# │  10. Advanced Selector Types                                                │
+# │  11. Label Best Practices                                                   │
+# │  12. Practical Examples                                                     │
+# │  13. Testing and Debugging                                                  │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                        1. WHAT ARE LABELS?                                ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   🎯 SIMPLE DEFINITION:
+#   ────────────────────
+#   Labels are KEY-VALUE PAIRS attached to Kubernetes objects (pods, services, etc.)
+#   They are used to organize, identify, and select objects.
+#
+#   Think of labels as TAGS or STICKERS you put on objects to categorize them.
+#
+#
+#   LABEL FORMAT:
+#   ─────────────
+#   key: value
+#
+#   Examples:
+#   ├─ app: nginx
+#   ├─ environment: production
+#   ├─ tier: frontend
+#   ├─ version: v1.2.3
+#   └─ team: platform
+#
+#
+#   LABEL RULES:
+#   ────────────
+#   Keys:
+#   ├─ Must be 63 characters or less
+#   ├─ Can contain: letters, numbers, hyphens, dots, underscores
+#   ├─ Must start and end with alphanumeric character
+#   └─ Can have optional prefix (example.com/key)
+#
+#   Values:
+#   ├─ Must be 63 characters or less
+#   ├─ Can contain: letters, numbers, hyphens, dots, underscores
+#   ├─ Can be empty string
+#   └─ Must start and end with alphanumeric character (if not empty)
+#
+#
+#   WHY USE LABELS?
+#   ───────────────
+#   ✓ Organize resources (group related objects)
+#   ✓ Select resources (find specific objects)
+#   ✓ Route traffic (services find pods)
+#   ✓ Manage resources (deployments manage pods)
+#   ✓ Query resources (kubectl get pods -l app=nginx)
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      2. WHAT ARE SELECTORS?                               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   🎯 SIMPLE DEFINITION:
+#   ────────────────────
+#   Selectors are QUERIES that find objects with matching labels.
+#   They are used by controllers and services to find the objects they manage.
+#
+#   Think of selectors as SEARCH FILTERS that find objects by their labels.
+#
+#
+#   SELECTOR TYPES:
+#   ───────────────
+#
+#   1. Equality-based selectors (simple matching)
+#      ├─ app = nginx        (matches app: nginx)
+#      ├─ app == nginx       (same as above)
+#      ├─ app != apache      (matches anything except app: apache)
+#      └─ environment = prod (matches environment: prod)
+#
+#   2. Set-based selectors (advanced matching)
+#      ├─ app in (nginx, apache)       (matches app: nginx OR app: apache)
+#      ├─ tier notin (backend)         (matches anything except tier: backend)
+#      ├─ environment                  (matches any object with environment label)
+#      └─ !version                     (matches objects without version label)
+#
+#
+#   WHERE SELECTORS ARE USED:
+#   ─────────────────────────
+#   ✓ Services → Find pods to route traffic to
+#   ✓ Deployments → Find pods to manage
+#   ✓ StatefulSets → Find pods to manage
+#   ✓ ReplicaSets → Find pods to manage
+#   ✓ kubectl commands → Find resources to display/modify
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                3. LABELS AND SELECTORS ARCHITECTURE                       ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   HOW THEY WORK TOGETHER:
+#   ───────────────────────
+#
+#   ┌─────────────────────────────────────────────────────────────────────┐
+#   │                      KUBERNETES CLUSTER                             │
+#   │                                                                     │
+#   │  ┌───────────────────────────────────────────────────────────────┐  │
+#   │  │  Service: frontend-service                                    │  │
+#   │  │  ─────────────────────────                                    │  │
+#   │  │  selector:                                                    │  │
+#   │  │    app: nginx  ◄──────────────────┐                           │  │
+#   │  │    tier: frontend                 │ Searches for pods         │  │
+#   │  └───────────────────────────────────┼───────────────────────────┘  │
+#   │                                      │ with matching labels      │  │
+#   │                                      │                           │  │
+#   │  ┌───────────────────────────────────┼───────────────────────────┐  │
+#   │  │  Deployment: nginx-deployment     │                           │  │
+#   │  │  ────────────────────────────     │                           │  │
+#   │  │  selector:                        │                           │  │
+#   │  │    matchLabels:                   │                           │  │
+#   │  │      app: nginx  ◄────────────────┼───────────┐               │  │
+#   │  │      tier: frontend               │           │               │  │
+#   │  │                                   │           │               │  │
+#   │  │  template:                        │           │               │  │
+#   │  │    metadata:                      │           │               │  │
+#   │  │      labels:                      │           │               │  │
+#   │  │        app: nginx  ◄──────────────┘           │               │  │
+#   │  │        tier: frontend                         │               │  │
+#   │  │        version: v1                            │               │  │
+#   │  └───────────────────────────────────────────────┼───────────────┘  │
+#   │                                                  │                   │
+#   │                                                  │ Creates pods      │
+#   │                                                  │ with these labels │
+#   │                                                  ▼                   │
+#   │  ┌─────────────────────────────────────────────────────────────────┐ │
+#   │  │  PODS                                                           │ │
+#   │  │  ────                                                           │ │
+#   │  │                                                                 │ │
+#   │  │  Pod: nginx-deployment-abc123                                   │ │
+#   │  │  labels:                                                        │ │
+#   │  │    app: nginx         ◄─── Matches Service selector ✓           │ │
+#   │  │    tier: frontend     ◄─── Matches Service selector ✓           │ │
+#   │  │    version: v1        ◄─── Extra label (OK!)                    │ │
+#   │  │                                                                 │ │
+#   │  │  Pod: nginx-deployment-def456                                   │ │
+#   │  │  labels:                                                        │ │
+#   │  │    app: nginx         ◄─── Matches Service selector ✓           │ │
+#   │  │    tier: frontend     ◄─── Matches Service selector ✓           │ │
+#   │  │    version: v1        ◄─── Extra label (OK!)                    │ │
+#   │  │                                                                 │ │
+#   │  └─────────────────────────────────────────────────────────────────┘ │
+#   │                                                                      │
+#   │  RESULT: Service routes traffic to both pods                         │
+#   │          Deployment manages both pods                                │
+#   │                                                                      │
+#   └───────────────────────────────────────────────────────────────────── ┘
+#
+#
+#   KEY CONCEPT:
+#   ────────────
+#   • Controllers (Deployment, StatefulSet) use selectors to find pods they manage
+#   • Services use selectors to find pods they route traffic to
+#   • Pods have labels that match these selectors
+#   • If labels match selector → Object is selected
+#   • If labels don't match → Object is ignored
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                    4. HOW THEY WORK TOGETHER                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   MATCHING PROCESS:
+#   ─────────────────
+#
+#   Step 1: Object has labels
+#   ─────────────────────────
+#   Pod:
+#     labels:
+#       app: nginx
+#       tier: frontend
+#       version: v1
+#
+#   Step 2: Selector defines criteria
+#   ──────────────────────────────────
+#   Service:
+#     selector:
+#       app: nginx
+#       tier: frontend
+#
+#   Step 3: Kubernetes compares
+#   ────────────────────────────
+#   Selector requires:     Pod has:
+#   app: nginx        ✓    app: nginx        ✓ Match!
+#   tier: frontend    ✓    tier: frontend    ✓ Match!
+#                          version: v1       (extra, ignored)
+#
+#   Result: ✓ MATCH! Pod is selected
+#
+#
+#   MATCHING RULES:
+#   ───────────────
+#
+#   ✓ ALL selector labels MUST exist in pod labels
+#   ✓ ALL selector label values MUST match pod label values
+#   ✓ Pod can have EXTRA labels (they are ignored)
+#   ✗ If ANY selector label is missing → NO MATCH
+#   ✗ If ANY selector label value differs → NO MATCH
+#
+#
+#   EXAMPLES:
+#   ─────────
+#
+#   Selector: { app: nginx }
+#   Pod labels: { app: nginx, tier: frontend }
+#   Result: ✓ MATCH (pod has all required labels)
+#
+#   Selector: { app: nginx, tier: frontend }
+#   Pod labels: { app: nginx }
+#   Result: ✗ NO MATCH (pod missing tier label)
+#
+#   Selector: { app: nginx }
+#   Pod labels: { app: apache }
+#   Result: ✗ NO MATCH (different value)
+#
+#   Selector: { app: nginx }
+#   Pod labels: { }
+#   Result: ✗ NO MATCH (no labels)
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                        5. LABELS IN PODS                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   Pods can have labels in their metadata section.
+#   These labels are used by Services, Deployments, and other controllers.
+#
+
+---
+# Example 1: Simple Pod with Labels
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-pod
+
+  # Labels section - key-value pairs
+  labels:
+    app: nginx # Application name
+    environment: production # Environment
+    tier: frontend # Application tier
+    version: "1.21" # Version (quoted because it starts with number)
+    team: platform # Team responsible
+
+  # Annotations (different from labels - not used for selection)
+  annotations:
+    description: "Main nginx web server"
+    contact: "platform-team@example.com"
+
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.21
+      ports:
+        - containerPort: 80
+
+      # Resource requests and limits to prevent noisy neighbor issues
+      # ──────────────────────────────────────────────────────────────
+      resources:
+        # Requests: Minimum guaranteed resources
+        requests:
+          cpu: 100m # 0.1 CPU cores (100 millicores)
+          memory: 128Mi # 128 Mebibytes of RAM
+
+        # Limits: Maximum resources the container can use
+        limits:
+          cpu: 500m # 0.5 CPU cores maximum
+          memory: 256Mi # 256 Mebibytes maximum
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  EXAMPLE 1 EXPLAINED: POD WITH LABELS                                   │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  Pod Structure:                                                         │
+# │  ──────────────                                                         │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  Pod: nginx-pod                                                  │   │
+# │  │  ───────────────                                                 │   │
+# │  │                                                                  │   │
+# │  │  metadata:                                                       │   │
+# │  │    labels:  ◄─── Used for SELECTION                              │   │
+# │  │      app: nginx                                                  │   │
+# │  │      environment: production                                     │   │
+# │  │      tier: frontend                                              │   │
+# │  │      version: "1.21"                                             │   │
+# │  │      team: platform                                              │   │
+# │  │                                                                  │   │
+# │  │    annotations:  ◄─── Used for METADATA (not selection)          │   │
+# │  │      description: "Main nginx web server"                        │   │
+# │  │      contact: "platform-team@example.com"                        │   │
+# │  │                                                                  │   │
+# │  │  spec:                                                           │   │
+# │  │    containers:                                                   │   │
+# │  │      - name: nginx                                               │   │
+# │  │        image: nginx:1.21                                         │   │
+# │  │        ports:                                                    │   │
+# │  │          - containerPort: 80                                     │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Labels vs Annotations:                                                 │
+# │  ──────────────────────                                                 │
+# │  LABELS:                                                                │
+# │  ├─ Used for selecting/querying resources                               │
+# │  ├─ Used by Services, Deployments, etc.                                 │
+# │  ├─ Limited to 63 characters                                            │
+# │  └─ Example: app: nginx                                                 │
+# │                                                                         │
+# │  ANNOTATIONS:                                                           │
+# │  ├─ Used for non-identifying metadata                                   │
+# │  ├─ NOT used for selection                                              │
+# │  ├─ No size limit                                                       │
+# │  └─ Example: description: "Main nginx web server"                       │
+# │                                                                         │
+# │  How Services Can Select This Pod:                                      │
+# │  ──────────────────────────────────                                     │
+# │  Service selector: { app: nginx }                                       │
+# │  └─ Matches! ✓                                                          │
+# │                                                                         │
+# │  Service selector: { app: nginx, tier: frontend }                       │
+# │  └─ Matches! ✓                                                          │
+# │                                                                         │
+# │  Service selector: { app: nginx, environment: production, tier: frontend }│
+# │  └─ Matches! ✓                                                          │
+# │                                                                         │
+# │  Service selector: { app: apache }                                      │
+# │  └─ No match ✗ (different app value)                                   │
+# │                                                                         │
+# │  kubectl Commands:                                                      │
+# │  ─────────────────                                                      │
+# │  # View this pod's labels                                               │
+# │  kubectl get pod nginx-pod --show-labels                                │
+# │  NAME        READY   STATUS    LABELS                                   │
+# │  nginx-pod  1/1     Running   app=nginx,environment=production,...      │
+# │                                                                         │
+# │  # Find this pod by label                                               │
+# │  kubectl get pods -l app=nginx                                          │
+# │  kubectl get pods -l environment=production                             │
+# │  kubectl get pods -l tier=frontend                                      │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+---
+# Example 2: Pod with Minimal Labels
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-pod
+  labels:
+    app: myapp # Minimum recommended: app name
+
+spec:
+  containers:
+    - name: myapp
+      image: busybox
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  EXAMPLE 2 EXPLAINED: MINIMAL LABELS (BEST PRACTICE)                   │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  Pod: simple-pod                                                        │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  metadata:                                                       │   │
+# │  │    labels:                                                       │   │
+# │  │      app: myapp  ◄─── MINIMUM recommended label                 │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Why Minimal Labels?                                                    │
+# │  ───────────────────                                                    │
+# │  ✓ Simple applications don't need complex labeling                      │
+# │  ✓ At minimum, always include 'app' label                               │
+# │  ✓ Easy to query: kubectl get pods -l app=myapp                         │
+# │  ✓ Services can select: selector: { app: myapp }                        │
+# │                                                                         │
+# │  When to Use:                                                           │
+# │  ────────────                                                           │
+# │  • Development/testing environments                                     │
+# │  • Simple single-purpose applications                                   │
+# │  • Proof of concepts                                                    │
+# │  • Learning Kubernetes                                                  │
+# │                                                                         │
+# │  When to Add More Labels:                                               │
+# │  ────────────────────────                                               │
+# │  • Multiple environments (add: environment: prod/staging/dev)           │
+# │  • Multiple tiers (add: tier: frontend/backend/database)                │
+# │  • Team ownership (add: team: platform-team)                            │
+# │  • Version tracking (add: version: "1.0.0")                             │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+---
+# Example 3: Pod with Hierarchical Labels
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend-pod
+  labels:
+    # Recommended label structure
+    app.kubernetes.io/name: backend # Application name
+    app.kubernetes.io/instance: backend-prod # Unique instance
+    app.kubernetes.io/version: "2.1.0" # Version
+    app.kubernetes.io/component: api # Component
+    app.kubernetes.io/part-of: ecommerce # Part of larger app
+    app.kubernetes.io/managed-by: kubectl # Management tool
+
+spec:
+  containers:
+    - name: backend
+      image: backend:2.1.0
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: 1000m
+          memory: 512Mi
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  EXAMPLE 3 EXPLAINED: KUBERNETES RECOMMENDED LABELS                     │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  Pod: backend-pod                                                       │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  metadata:                                                       │   │
+# │  │    labels:                                                       │   │
+# │  │      app.kubernetes.io/name: backend                             │   │
+# │  │      app.kubernetes.io/instance: backend-prod                    │   │
+# │  │      app.kubernetes.io/version: "2.1.0"                          │   │
+# │  │      app.kubernetes.io/component: api                            │   │
+# │  │      app.kubernetes.io/part-of: ecommerce                        │   │
+# │  │      app.kubernetes.io/managed-by: kubectl                       │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Kubernetes Recommended Label Schema:                                   │
+# │  ────────────────────────────────────                                   │
+# │                                                                         │
+# │  app.kubernetes.io/name: backend                                        │
+# │  └─ Application name (e.g., mysql, wordpress, backend)                  │
+# │                                                                         │
+# │  app.kubernetes.io/instance: backend-prod                               │
+# │  └─ Unique instance identifier (e.g., backend-prod, backend-staging)    │
+# │                                                                         │
+# │  app.kubernetes.io/version: "2.1.0"                                     │
+# │  └─ Application version (e.g., "2.1.0", "v1.0.0")                       │
+# │                                                                         │
+# │  app.kubernetes.io/component: api                                       │
+# │  └─ Component within architecture (e.g., api, database, cache)          │
+# │                                                                         │
+# │  app.kubernetes.io/part-of: ecommerce                                   │
+# │  └─ Name of higher-level application (e.g., ecommerce, platform)        │
+# │                                                                         │
+# │  app.kubernetes.io/managed-by: kubectl                                  │
+# │  └─ Tool managing the application (e.g., helm, kubectl, terraform)      │
+# │                                                                         │
+# │  Benefits of This Schema:                                               │
+# │  ────────────────────────                                               │
+# │  ✓ Standardized across Kubernetes ecosystem                             │
+# │  ✓ Compatible with Helm, Kustomize, and other tools                     │
+# │  ✓ Clear namespace (app.kubernetes.io/) prevents conflicts              │
+# │  ✓ Self-documenting (label names explain their purpose)                 │
+# │  ✓ Enables powerful queries and filtering                               │
+# │                                                                         │
+# │  Example Queries:                                                       │
+# │  ───────────────                                                        │
+# │  # Find all components of ecommerce app                                 │
+# │  kubectl get all -l app.kubernetes.io/part-of=ecommerce                 │
+# │                                                                         │
+# │  # Find specific version                                                │
+# │  kubectl get pods -l app.kubernetes.io/version=2.1.0                    │
+# │                                                                         │
+# │  # Find all API components                                              │
+# │  kubectl get pods -l app.kubernetes.io/component=api                    │
+# │                                                                         │
+# │  # Find resources managed by specific tool                              │
+# │  kubectl get all -l app.kubernetes.io/managed-by=helm                   │
+# │                                                                         │
+# │  Service Selection:                                                     │
+# │  ──────────────────                                                     │
+# │  Service can select this pod using:                                     │
+# │  selector:                                                              │
+# │    app.kubernetes.io/name: backend                                      │
+# │    app.kubernetes.io/component: api                                     │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                    6. SELECTORS IN SERVICES                               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   Services use selectors to find pods to route traffic to.
+#   The selector is a simple key-value map (equality-based).
+#
+
+---
+# Example 4: Service with Selector
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+
+spec:
+  # Selector: Finds pods with matching labels
+  # ──────────────────────────────────────────
+  # This service will route traffic to ANY pod that has:
+  # - app: nginx AND
+  # - tier: frontend
+  selector:
+    app: nginx
+    tier: frontend
+
+  ports:
+    - port: 80
+      targetPort: 80
+
+  type: ClusterIP
+
+# This service will select:
+# ✓ nginx-pod (has app: nginx, tier: frontend, and other labels)
+# ✗ simple-pod (doesn't have tier: frontend)
+# ✗ backend-pod (has different app label)
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  HOW THIS SERVICE SELECTOR WORKS                                        │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  Service: nginx-service                                                 │
+# │  ┌────────────────────────────────────┐                                 │
+# │  │ selector:                          │                                 │
+# │  │   app: nginx  ◄────────────────┐   │                                 │
+# │  │   tier: frontend               │   │                                 │
+# │  └────────────────────────────────┼───┘                                 │
+# │                                   │                                     │
+# │                                   │ Kubernetes searches ALL pods        │
+# │                                   │ in namespace for matching labels    │
+# │                                   ▼                                     │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  MATCHING PROCESS                                                │   │
+# │  ├──────────────────────────────────────────────────────────────────┤   │
+# │  │                                                                  │   │
+# │  │  Pod: nginx-pod                                                  │   │
+# │  │  Labels: { app: nginx, environment: production,                 │   │
+# │  │            tier: frontend, version: "1.21", team: platform }     │   │
+# │  │  ├─ app: nginx ✓ (matches selector)                             │   │
+# │  │  ├─ tier: frontend ✓ (matches selector)                         │   │
+# │  │  └─ RESULT: ✓ SELECTED! Traffic will be routed here             │   │
+# │  │                                                                  │   │
+# │  │  Pod: simple-pod                                                 │   │
+# │  │  Labels: { app: myapp }                                          │   │
+# │  │  ├─ app: myapp ✗ (doesn't match nginx)                          │   │
+# │  │  ├─ tier: <missing> ✗ (selector requires this)                  │   │
+# │  │  └─ RESULT: ✗ NOT SELECTED! Traffic won't be routed here        │   │
+# │  │                                                                  │   │
+# │  │  Pod: backend-pod                                                │   │
+# │  │  Labels: { app.kubernetes.io/name: backend, ... }               │   │
+# │  │  ├─ app: <missing> ✗ (selector requires this)                   │   │
+# │  │  ├─ tier: <missing> ✗ (selector requires this)                  │   │
+# │  │  └─ RESULT: ✗ NOT SELECTED! Traffic won't be routed here        │   │
+# │  │                                                                  │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  FINAL RESULT:                                                          │
+# │  ─────────────                                                          │
+# │  Service Endpoints: [ nginx-pod ]                                       │
+# │                                                                         │
+# │  Traffic Flow:                                                          │
+# │  Client → nginx-service:80 → nginx-pod:80                               │
+# │                                                                         │
+# │  kubectl get endpoints nginx-service                                    │
+# │  NAME             ENDPOINTS         AGE                                 │
+# │  nginx-service   10.244.0.5:80     1m                                   │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+---
+# Example 5: Service Selecting Single Label
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service
+
+spec:
+  # Selector with single label
+  # Selects ALL pods with app: myapp
+  selector:
+    app: myapp
+
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+# This service will select:
+# ✓ simple-pod (has app: myapp)
+# ✓ Any other pod with app: myapp label
+
+---
+# Example 6: Service with Multiple Selectors
+apiVersion: v1
+kind: Service
+metadata:
+  name: production-backend-service
+
+spec:
+  # Selector with multiple labels
+  # ALL labels must match for pod to be selected
+  selector:
+    app: backend
+    environment: production
+    tier: api
+
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+# This service will ONLY select pods that have ALL three labels:
+# - app: backend
+# - environment: production
+# - tier: api
+
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║              7. LABELS AND SELECTORS IN DEPLOYMENTS                       ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   Deployments use selectors to find pods they manage.
+#   They also define labels in the pod template.
+#
+#   IMPORTANT: The selector MUST match the template labels!
+#
+
+---
+# Example 7: Deployment with Labels and Selectors
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+
+  # Labels for the Deployment itself (optional)
+  labels:
+    app: nginx
+    managed-by: deployment-controller
+
+spec:
+  replicas: 3
+
+  # Selector: Deployment uses this to find pods it manages
+  # ───────────────────────────────────────────────────────
+  # This MUST match the labels in template.metadata.labels
+  selector:
+    matchLabels:
+      app: nginx
+      tier: frontend
+
+  # Template: Blueprint for creating pods
+  # ──────────────────────────────────────
+  template:
+    metadata:
+      # Labels for pods created by this Deployment
+      # These MUST include all labels from selector.matchLabels
+      labels:
+        app: nginx # Required by selector ✓
+        tier: frontend # Required by selector ✓
+        version: "1.21" # Extra label (OK!)
+        managed-by: deployment # Extra label (OK!)
+
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.21
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+# FLOW:
+# ─────
+# 1. Deployment creates pods using template
+# 2. Pods get labels: { app: nginx, tier: frontend, version: "1.21", managed-by: deployment }
+# 3. Deployment selector finds pods with: { app: nginx, tier: frontend }
+# 4. Deployment manages these pods (scaling, updates, etc.)
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  HOW THIS DEPLOYMENT WORKS                                              │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  Step 1: Deployment Created                                             │
+# │  ───────────────────────────                                            │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  Deployment: nginx-deployment                                    │   │
+# │  │  ────────────────────────────                                    │   │
+# │  │  replicas: 3                                                     │   │
+# │  │  selector:                                                       │   │
+# │  │    matchLabels:                                                  │   │
+# │  │      app: nginx  ◄───────────────────────────┐                   │   │
+# │  │      tier: frontend ◄────────────────────────│                   │   │
+# │  │                                              │                   │   │
+# │  │  template:                                   │                   │   │
+# │  │    metadata:                                 │                   │   │
+# │  │      labels:                                 │                   │   │
+# │  │        app: nginx  ◄─────────────────────────┘ MUST MATCH!       │   │
+# │  │        tier: frontend  ◄─────────────────────┘ MUST MATCH!       │   │
+# │  │        version: "1.21"  ◄────────────────────  Extra (OK!)       │   │
+# │  │        managed-by: deployment  ◄─────────────  Extra (OK!)       │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Step 2: Deployment Creates ReplicaSet                                  │
+# │  ──────────────────────────────────────                                 │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  ReplicaSet: nginx-deployment-5d4c7b9f8d                         │   │
+# │  │  ────────────────────────────────────────                        │   │
+# │  │  (Automatically created by Deployment)                           │   │
+# │  │  selector:                                                       │   │
+# │  │    matchLabels:                                                  │   │
+# │  │      app: nginx                                                  │   │
+# │  │      tier: frontend                                              │   │
+# │  │      pod-template-hash: 5d4c7b9f8d  ◄─ Auto-added by K8s!        │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Step 3: ReplicaSet Creates Pods                                        │
+# │  ────────────────────────────────                                       │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  3 Pods Created                                                  │   │
+# │  │  ──────────────                                                  │   │
+# │  │                                                                  │   │
+# │  │  Pod 1: nginx-deployment-5d4c7b9f8d-abc123                       │   │
+# │  │  ├─ app: nginx                                                   │   │
+# │  │  ├─ tier: frontend                                               │   │
+# │  │  ├─ version: "1.21"                                              │   │
+# │  │  ├─ managed-by: deployment                                       │   │
+# │  │  └─ pod-template-hash: 5d4c7b9f8d                                │   │
+# │  │                                                                  │   │
+# │  │  Pod 2: nginx-deployment-5d4c7b9f8d-def456                       │   │
+# │  │  ├─ app: nginx                                                   │   │
+# │  │  ├─ tier: frontend                                               │   │
+# │  │  ├─ version: "1.21"                                              │   │
+# │  │  ├─ managed-by: deployment                                       │   │
+# │  │  └─ pod-template-hash: 5d4c7b9f8d                                │   │
+# │  │                                                                  │   │
+# │  │  Pod 3: nginx-deployment-5d4c7b9f8d-ghi789                       │   │
+# │  │  ├─ app: nginx                                                   │   │
+# │  │  ├─ tier: frontend                                               │   │
+# │  │  ├─ version: "1.21"                                              │   │
+# │  │  ├─ managed-by: deployment                                       │   │
+# │  │  └─ pod-template-hash: 5d4c7b9f8d                                │   │
+# │  │                                                                  │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Step 4: Deployment Manages Pods                                        │
+# │  ────────────────────────────────                                       │
+# │  Deployment selector: { app: nginx, tier: frontend }                    │
+# │  Finds all 3 pods ✓ (they all have these labels)                        │
+# │                                                                         │
+# │  Management Actions:                                                    │
+# │  ├─ Scaling: kubectl scale deployment nginx-deployment --replicas=5     │
+# │  │  └─ Creates 2 more pods with same labels                             │
+# │  │                                                                       │
+# │  ├─ Updates: kubectl set image deployment/nginx-deployment nginx=1.22   │
+# │  │  └─ Creates new ReplicaSet with new pod-template-hash                │
+# │  │                                                                       │
+# │  └─ Monitoring: Ensures desired replicas = actual replicas               │
+# │                                                                         │
+# │  kubectl get pods -l app=nginx,tier=frontend                            │
+# │  NAME                                  READY   STATUS    RESTARTS   AGE  │
+# │  nginx-deployment-5d4c7b9f8d-abc123    1/1     Running   0          5m   │
+# │  nginx-deployment-5d4c7b9f8d-def456    1/1     Running   0          5m   │
+# │  nginx-deployment-5d4c7b9f8d-ghi789    1/1     Running   0          5m   │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+---
+# Example 8: Deployment with Advanced Selector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+
+spec:
+  replicas: 2
+
+  # Advanced selector using matchExpressions
+  # ─────────────────────────────────────────
+  selector:
+    matchLabels:
+      app: backend
+
+    # Additional set-based requirements
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - production
+          - staging
+
+      - key: tier
+        operator: NotIn
+        values:
+          - deprecated
+
+  template:
+    metadata:
+      labels:
+        app: backend
+        environment: production
+        tier: api
+
+    spec:
+      containers:
+        - name: backend
+          image: backend:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+
+# This selector matches pods that have:
+# - app: backend (exact match)
+# - environment: production OR staging (set-based)
+# - tier: anything except "deprecated" (set-based)
+
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║             8. LABELS AND SELECTORS IN STATEFULSETS                       ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   StatefulSets work the same as Deployments for labels and selectors.
+#   They also require a headless service with matching selector.
+#
+
+---
+# Example 9: StatefulSet with Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  labels:
+    app: postgres
+
+spec:
+  clusterIP: None # Headless service
+
+  # Selector: Finds pods to provide DNS for
+  selector:
+    app: postgres
+    tier: database
+
+  ports:
+    - port: 5432
+      name: postgres
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+
+spec:
+  serviceName: postgres-service # Must match headless service name
+  replicas: 3
+
+  # Selector: StatefulSet uses this to find pods it manages
+  selector:
+    matchLabels:
+      app: postgres
+      tier: database
+
+  template:
+    metadata:
+      # Labels for pods created by this StatefulSet
+      # MUST include all labels from selector.matchLabels
+      labels:
+        app: postgres # Required by selector ✓
+        tier: database # Required by selector ✓
+        version: "13" # Extra label (OK!)
+
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:13
+          ports:
+            - containerPort: 5432
+              name: postgres
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+
+# FLOW:
+# ─────
+# 1. StatefulSet creates pods: postgres-0, postgres-1, postgres-2
+# 2. Pods get labels: { app: postgres, tier: database, version: "13" }
+# 3. StatefulSet selector finds pods with: { app: postgres, tier: database }
+# 4. Service selector finds same pods for DNS
+# 5. Each pod gets DNS: postgres-0.postgres-service, postgres-1.postgres-service, etc.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  HOW STATEFULSET + HEADLESS SERVICE WORKS                               │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  Step 1: Headless Service Created                                       │
+# │  ─────────────────────────────────                                      │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  Service: postgres-service                                       │   │
+# │  │  ──────────────────────────                                      │   │
+# │  │  clusterIP: None  ◄─── HEADLESS! No load balancing               │   │
+# │  │  selector:                                                       │   │
+# │  │    app: postgres  ◄──────────────────────────┐                   │   │
+# │  │    tier: database                            │                   │   │
+# │  │  ports:                                      │                   │   │
+# │  │    - port: 5432                              │                   │   │
+# │  └──────────────────────────────────────────────┼───────────────────┘   │
+# │                                                 │                       │
+# │                                                 │ Provides DNS for      │
+# │                                                 │ matching pods         │
+# │                                                 ▼                       │
+# │  Step 2: StatefulSet Created                                            │
+# │  ────────────────────────────                                           │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  StatefulSet: postgres                                           │   │
+# │  │  ──────────────────────                                          │   │
+# │  │  serviceName: postgres-service  ◄─── Links to headless service  │   │
+# │  │  replicas: 3                                                     │   │
+# │  │  selector:                                                       │   │
+# │  │    matchLabels:                                                  │   │
+# │  │      app: postgres  ◄────────────────────────┐                   │   │
+# │  │      tier: database                          │                   │   │
+# │  │  template:                                   │                   │   │
+# │  │    metadata:                                 │                   │   │
+# │  │      labels:                                 │                   │   │
+# │  │        app: postgres  ◄──────────────────────┘ MUST MATCH!       │   │
+# │  │        tier: database  ◄─────────────────────┐ MUST MATCH!       │   │
+# │  │        version: "13"  ◄──────────────────────┘ Extra (OK!)       │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Step 3: StatefulSet Creates Pods (Sequentially!)                       │
+# │  ─────────────────────────────────────────────────                      │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  Pod 1: postgres-0                                               │   │
+# │  │  ──────────────────                                              │   │
+# │  │  Hostname: postgres-0                                            │   │
+# │  │  DNS: postgres-0.postgres-service.default.svc.cluster.local      │   │
+# │  │  IP: 10.244.0.10 (example)                                       │   │
+# │  │  Labels:                                                         │   │
+# │  │    ├─ app: postgres                                              │   │
+# │  │    ├─ tier: database                                             │   │
+# │  │    └─ version: "13"                                              │   │
+# │  │  PVC: data-postgres-0 (10Gi, ReadWriteOnce)                      │   │
+# │  │                                                                  │   │
+# │  │  Pod 2: postgres-1                                               │   │
+# │  │  ──────────────────                                              │   │
+# │  │  Hostname: postgres-1                                            │   │
+# │  │  DNS: postgres-1.postgres-service.default.svc.cluster.local      │   │
+# │  │  IP: 10.244.0.11 (example)                                       │   │
+# │  │  Labels:                                                         │   │
+# │  │    ├─ app: postgres                                              │   │
+# │  │    ├─ tier: database                                             │   │
+# │  │    └─ version: "13"                                              │   │
+# │  │  PVC: data-postgres-1 (10Gi, ReadWriteOnce)                      │   │
+# │  │                                                                  │   │
+# │  │  Pod 3: postgres-2                                               │   │
+# │  │  ──────────────────                                              │   │
+# │  │  Hostname: postgres-2                                            │   │
+# │  │  DNS: postgres-2.postgres-service.default.svc.cluster.local      │   │
+# │  │  IP: 10.244.0.12 (example)                                       │   │
+# │  │  Labels:                                                         │   │
+# │  │    ├─ app: postgres                                              │   │
+# │  │    ├─ tier: database                                             │   │
+# │  │    └─ version: "13"                                              │   │
+# │  │  PVC: data-postgres-2 (10Gi, ReadWriteOnce)                      │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  Step 4: Headless Service Provides DNS                                  │
+# │  ──────────────────────────────────────                                 │
+# │  Service selector: { app: postgres, tier: database }                    │
+# │  Finds all 3 pods ✓ (they all have these labels)                        │
+# │                                                                         │
+# │  DNS Resolution:                                                        │
+# │  ───────────────                                                        │
+# │  Query: postgres-service                                                │
+# │  Returns: [10.244.0.10, 10.244.0.11, 10.244.0.12]  ◄─ All pod IPs      │
+# │                                                                         │
+# │  Query: postgres-0.postgres-service                                     │
+# │  Returns: 10.244.0.10  ◄─ Specific pod IP (stable!)                    │
+# │                                                                         │
+# │  Query: postgres-1.postgres-service                                     │
+# │  Returns: 10.244.0.11  ◄─ Specific pod IP (stable!)                    │
+# │                                                                         │
+# │  Query: postgres-2.postgres-service                                     │
+# │  Returns: 10.244.0.12  ◄─ Specific pod IP (stable!)                    │
+# │                                                                         │
+# │  Step 5: Client Access                                                  │
+# │  ──────────────────────                                                 │
+# │  # Connect to specific pod (e.g., primary database)                     │
+# │  psql -h postgres-0.postgres-service -p 5432                            │
+# │                                                                         │
+# │  # Connect to any pod (client-side load balancing)                      │
+# │  psql -h postgres-service -p 5432                                       │
+# │                                                                         │
+# │  KEY DIFFERENCES FROM REGULAR SERVICE:                                  │
+# │  ─────────────────────────────────────                                  │
+# │  Regular Service:                                                       │
+# │  ├─ Has ClusterIP                                                       │
+# │  ├─ Load balances traffic                                               │
+# │  └─ DNS returns service IP                                              │
+# │                                                                         │
+# │  Headless Service:                                                      │
+# │  ├─ No ClusterIP (clusterIP: None)                                      │
+# │  ├─ No load balancing                                                   │
+# │  ├─ DNS returns all pod IPs                                             │
+# │  └─ Enables direct pod access via DNS                                   │
+# │                                                                         │
+# │  kubectl get pods -l app=postgres,tier=database                         │
+# │  NAME          READY   STATUS    RESTARTS   AGE                         │
+# │  postgres-0   1/1     Running   0          10m                          │
+# │  postgres-1   1/1     Running   0          9m                           │
+# │  postgres-2   1/1     Running   0          8m                           │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                   9. ADVANCED SELECTOR TYPES                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   EQUALITY-BASED SELECTORS:
+#   ─────────────────────────
+#   Used in: Services, kubectl commands
+#   Format: key=value or key!=value
+#
+#   Examples:
+#   kubectl get pods -l app=nginx
+#   kubectl get pods -l app=nginx,tier=frontend
+#   kubectl get pods -l app!=apache
+#
+#
+#   SET-BASED SELECTORS:
+#   ────────────────────
+#   Used in: Deployments, StatefulSets, ReplicaSets (matchExpressions)
+#   Operators: In, NotIn, Exists, DoesNotExist
+#
+#   Examples:
+#   matchExpressions:
+#   - key: environment
+#     operator: In
+#     values: [production, staging]
+#
+#   - key: tier
+#     operator: NotIn
+#     values: [deprecated]
+#
+#   - key: version
+#     operator: Exists
+#
+#   - key: legacy
+#     operator: DoesNotExist
+#
+
+---
+# Example 10: Deployment with Complex Selector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: complex-deployment
+
+spec:
+  replicas: 3
+
+  selector:
+    # Combine matchLabels and matchExpressions
+    matchLabels:
+      app: myapp
+
+    matchExpressions:
+      # Match pods where environment is production OR staging
+      - key: environment
+        operator: In
+        values:
+          - production
+          - staging
+
+      # Match pods where tier is NOT deprecated
+      - key: tier
+        operator: NotIn
+        values:
+          - deprecated
+          - legacy
+
+      # Match pods that have a version label (any value)
+      - key: version
+        operator: Exists
+
+      # Match pods that DON'T have a canary label
+      - key: canary
+        operator: DoesNotExist
+
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: production
+        tier: frontend
+        version: "2.0"
+        # No canary label
+
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:2.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+# This selector matches pods that have:
+# ✓ app: myapp (exact match)
+# ✓ environment: production OR staging
+# ✓ tier: anything except deprecated or legacy
+# ✓ version: any value (label must exist)
+# ✓ canary: must NOT exist
+
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                     10. LABEL BEST PRACTICES                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   RECOMMENDED LABELS:
+#   ───────────────────
+#
+#   Essential labels (always include):
+#   ├─ app: <application-name>           # What application
+#   ├─ environment: <env>                # Which environment (prod, staging, dev)
+#   └─ version: <version>                # Application version
+#
+#   Additional useful labels:
+#   ├─ tier: <tier>                      # Application tier (frontend, backend, database)
+#   ├─ component: <component>            # Component name (api, worker, cache)
+#   ├─ team: <team-name>                 # Owning team
+#   ├─ cost-center: <cost-center>        # For billing/tracking
+#   └─ managed-by: <tool>                # Management tool (helm, kubectl, terraform)
+#
+#
+#   KUBERNETES RECOMMENDED LABELS:
+#   ──────────────────────────────
+#   Use these for better compatibility with tools:
+#
+#   app.kubernetes.io/name: <app-name>
+#   app.kubernetes.io/instance: <instance-name>
+#   app.kubernetes.io/version: <version>
+#   app.kubernetes.io/component: <component>
+#   app.kubernetes.io/part-of: <app-group>
+#   app.kubernetes.io/managed-by: <tool>
+#
+#
+#   BEST PRACTICES:
+#   ───────────────
+#
+#   ✓ DO:
+#   ├─ Use consistent label names across all resources
+#   ├─ Use lowercase for label keys and values
+#   ├─ Use hyphens for multi-word labels (tier: api-gateway)
+#   ├─ Keep label values short and simple
+#   ├─ Use meaningful, descriptive names
+#   ├─ Document your labeling strategy
+#   └─ Use the same labels in selector and template
+#
+#   ✗ DON'T:
+#   ├─ Don't use labels for non-identifying information (use annotations)
+#   ├─ Don't use spaces in label keys or values
+#   ├─ Don't use special characters (except hyphen, dot, underscore)
+#   ├─ Don't make labels too long (63 char limit)
+#   ├─ Don't change labels on running pods (recreate instead)
+#   └─ Don't use too many labels (keep it simple)
+#
+#
+#   LABELS vs ANNOTATIONS:
+#   ──────────────────────
+#
+#   Use LABELS for:
+#   ├─ Identifying resources
+#   ├─ Selecting resources
+#   ├─ Grouping resources
+#   └─ Organizing resources
+#
+#   Use ANNOTATIONS for:
+#   ├─ Non-identifying metadata
+#   ├─ Tool-specific information
+#   ├─ Build/release information
+#   ├─ Contact information
+#   └─ Descriptions and notes
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                     11. PRACTICAL EXAMPLES                                ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   SCENARIO: E-commerce Application
+#   ─────────────────────────────────
+#   Multiple components, multiple environments
+#
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: ecommerce
+    component: frontend
+
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ecommerce
+      component: frontend
+      environment: production
+
+  template:
+    metadata:
+      labels:
+        app: ecommerce
+        component: frontend
+        environment: production
+        tier: web
+        version: "2.1.0"
+        team: frontend-team
+    spec:
+      containers:
+        - name: frontend
+          image: ecommerce-frontend:2.1.0
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  labels:
+    app: ecommerce
+    component: frontend
+
+spec:
+  selector:
+    app: ecommerce
+    component: frontend
+    environment: production
+
+  ports:
+    - port: 80
+      targetPort: 3000
+
+  type: LoadBalancer
+
+---
+# Backend API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api
+  labels:
+    app: ecommerce
+    component: api
+
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ecommerce
+      component: api
+      environment: production
+
+  template:
+    metadata:
+      labels:
+        app: ecommerce
+        component: api
+        environment: production
+        tier: backend
+        version: "3.2.1"
+        team: backend-team
+    spec:
+      containers:
+        - name: api
+          image: ecommerce-api:3.2.1
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+
+---
+# Backend API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  labels:
+    app: ecommerce
+    component: api
+
+spec:
+  selector:
+    app: ecommerce
+    component: api
+    environment: production
+
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+# Database StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: database
+  labels:
+    app: ecommerce
+    component: database
+
+spec:
+  serviceName: database-service
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: ecommerce
+      component: database
+      environment: production
+
+  template:
+    metadata:
+      labels:
+        app: ecommerce
+        component: database
+        environment: production
+        tier: data
+        version: "14.5"
+        team: platform-team
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14.5
+          ports:
+            - containerPort: 5432
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+---
+# Database Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-service
+  labels:
+    app: ecommerce
+    component: database
+
+spec:
+  clusterIP: None
+  selector:
+    app: ecommerce
+    component: database
+    environment: production
+
+  ports:
+    - port: 5432
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  COMPLETE E-COMMERCE APPLICATION ARCHITECTURE                           │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                         │
+# │  This diagram shows how all components work together using labels!      │
+# │                                                                         │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  FRONTEND TIER                                                   │   │
+# │  ├──────────────────────────────────────────────────────────────────┤   │
+# │  │                                                                  │   │
+# │  │  Service: frontend-service (LoadBalancer)                        │   │
+# │  │  selector: { app: ecommerce, component: frontend, env: prod }    │   │
+# │  │  ├─ Port: 80 → 3000                                              │   │
+# │  │  └─ External IP: 34.123.45.67                                    │   │
+# │  │                │                                                 │   │
+# │  │                ▼ Routes traffic to                               │   │
+# │  │  Deployment: frontend (3 replicas)                               │   │
+# │  │  selector: { app: ecommerce, component: frontend, env: prod }    │   │
+# │  │  template.labels: { app: ecommerce, component: frontend,         │   │
+# │  │                     environment: production, tier: web,          │   │
+# │  │                     version: "2.1.0", team: frontend-team }      │   │
+# │  │                │                                                 │   │
+# │  │                ▼ Creates                                         │   │
+# │  │  Pods: frontend-xxx-abc, frontend-xxx-def, frontend-xxx-ghi      │   │
+# │  │  All have labels: { app: ecommerce, component: frontend, ... }   │   │
+# │  │                                                                  │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                │                                        │
+# │                                │ Makes API calls to                     │
+# │                                ▼                                        │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  BACKEND TIER                                                    │   │
+# │  ├──────────────────────────────────────────────────────────────────┤   │
+# │  │                                                                  │   │
+# │  │  Service: api-service (ClusterIP)                                │   │
+# │  │  selector: { app: ecommerce, component: api, env: prod }         │   │
+# │  │  └─ Port: 8080 → 8080                                            │   │
+# │  │                │                                                 │   │
+# │  │                ▼ Routes traffic to                               │   │
+# │  │  Deployment: backend-api (5 replicas)                            │   │
+# │  │  selector: { app: ecommerce, component: api, env: prod }         │   │
+# │  │  template.labels: { app: ecommerce, component: api,              │   │
+# │  │                     environment: production, tier: backend,      │   │
+# │  │                     version: "3.2.1", team: backend-team }       │   │
+# │  │                │                                                 │   │
+# │  │                ▼ Creates                                         │   │
+# │  │  Pods: backend-api-xxx-abc, backend-api-xxx-def, ... (5 pods)    │   │
+# │  │  All have labels: { app: ecommerce, component: api, ... }        │   │
+# │  │                                                                  │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                │                                        │
+# │                                │ Connects to database                   │
+# │                                ▼                                        │
+# │  ┌──────────────────────────────────────────────────────────────────┐   │
+# │  │  DATABASE TIER                                                   │   │
+# │  ├──────────────────────────────────────────────────────────────────┤   │
+# │  │                                                                  │   │
+# │  │  Service: database-service (Headless)                            │   │
+# │  │  selector: { app: ecommerce, component: database, env: prod }    │   │
+# │  │  ├─ clusterIP: None                                              │   │
+# │  │  └─ Port: 5432                                                   │   │
+# │  │                │                                                 │   │
+# │  │                ▼ Provides DNS for                                │   │
+# │  │  StatefulSet: database (3 replicas)                              │   │
+# │  │  selector: { app: ecommerce, component: database, env: prod }    │   │
+# │  │  template.labels: { app: ecommerce, component: database,         │   │
+# │  │                     environment: production, tier: data,         │   │
+# │  │                     version: "14.5", team: platform-team }       │   │
+# │  │                │                                                 │   │
+# │  │                ▼ Creates (sequentially)                          │   │
+# │  │  Pods: database-0, database-1, database-2                        │   │
+# │  │  ├─ database-0.database-service (Primary)                        │   │
+# │  │  ├─ database-1.database-service (Replica)                        │   │
+# │  │  └─ database-2.database-service (Replica)                        │   │
+# │  │  All have labels: { app: ecommerce, component: database, ... }   │   │
+# │  │                                                                  │   │
+# │  └──────────────────────────────────────────────────────────────────┘   │
+# │                                                                         │
+# │  TRAFFIC FLOW:                                                          │
+# │  ─────────────                                                          │
+# │  User → frontend-service:80 → frontend pods:3000                        │
+# │         frontend pods → api-service:8080 → backend-api pods:8080        │
+# │                         backend-api pods → database-0.database-svc:5432 │
+# │                                                                         │
+# │  LABEL-BASED QUERIES:                                                   │
+# │  ────────────────────                                                   │
+# │  # Get all ecommerce resources                                          │
+# │  kubectl get all -l app=ecommerce                                       │
+# │  → Returns: 3 deployments, 1 statefulset, 3 services, 11 pods           │
+# │                                                                         │
+# │  # Get only frontend resources                                          │
+# │  kubectl get all -l app=ecommerce,component=frontend                    │
+# │  → Returns: 1 deployment, 1 service, 3 pods                             │
+# │                                                                         │
+# │  # Get all production resources                                         │
+# │  kubectl get all -l environment=production                              │
+# │  → Returns: All resources (all are in production)                       │
+# │                                                                         │
+# │  # Get all backend tier resources                                       │
+# │  kubectl get all -l tier=backend                                        │
+# │  → Returns: 1 deployment, 1 service, 5 pods (backend-api)               │
+# │                                                                         │
+# │  # Get resources managed by specific team                               │
+# │  kubectl get all -l team=backend-team                                   │
+# │  → Returns: 1 deployment, 5 pods (backend-api)                          │
+# │                                                                         │
+# │  SCALING EXAMPLE:                                                       │
+# │  ────────────────                                                       │
+# │  kubectl scale deployment frontend --replicas=5                         │
+# │  1. Deployment creates 2 more pods                                      │
+# │  2. New pods get labels: { app: ecommerce, component: frontend, ... }   │
+# │  3. Service automatically discovers new pods (via selector)              │
+# │  4. Traffic now distributed across 5 frontend pods                      │
+# │                                                                         │
+# │  UPDATE EXAMPLE:                                                        │
+# │  ───────────────                                                        │
+# │  kubectl set image deployment/backend-api api=ecommerce-api:3.3.0       │
+# │  1. Deployment creates new ReplicaSet with new pod-template-hash        │
+# │  2. New pods get labels: { ..., version: "3.3.0", pod-...: new-hash }   │
+# │  3. Service selector still matches (doesn't care about version label)   │
+# │  4. Rolling update: old pods terminated, new pods created               │
+# │                                                                         │
+# │  KEY INSIGHTS:                                                          │
+# │  ─────────────                                                          │
+# │  ✓ Common label (app: ecommerce) groups all components                  │
+# │  ✓ Component label (frontend, api, database) separates tiers            │
+# │  ✓ Environment label (production) enables env-specific queries          │
+# │  ✓ Tier label (web, backend, data) shows architectural layer            │
+# │  ✓ Version label enables version tracking (not used in selectors)       │
+# │  ✓ Team label enables ownership tracking                                │
+# │  ✓ Services use selectors to find pods dynamically                      │
+# │  ✓ Labels enable powerful querying and organization                     │
+# │                                                                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# QUERYING RESOURCES:
+# ───────────────────
+#
+# Get all ecommerce resources:
+# kubectl get all -l app=ecommerce
+#
+# Get only frontend resources:
+# kubectl get all -l app=ecommerce,component=frontend
+#
+# Get all production resources:
+# kubectl get all -l environment=production
+#
+# Get all backend tier resources:
+# kubectl get all -l tier=backend
+#
+# Get resources managed by specific team:
+# kubectl get all -l team=backend-team
+#
+# Get all resources except frontend:
+# kubectl get all -l 'component!=frontend'
+#
+
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                    12. TESTING AND DEBUGGING                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   VIEWING LABELS:
+#   ───────────────
+#
+#   # Show labels for all pods
+#   kubectl get pods --show-labels
+#
+#   # Show labels for specific resource
+#   kubectl get deployment nginx-deployment --show-labels
+#
+#   # Show labels in columns
+#   kubectl get pods -L app,environment,tier
+#
+#
+#   FILTERING BY LABELS:
+#   ────────────────────
+#
+#   # Single label
+#   kubectl get pods -l app=nginx
+#
+#   # Multiple labels (AND)
+#   kubectl get pods -l app=nginx,tier=frontend
+#
+#   # Not equal
+#   kubectl get pods -l app!=nginx
+#
+#   # Set-based (In)
+#   kubectl get pods -l 'environment in (production,staging)'
+#
+#   # Set-based (NotIn)
+#   kubectl get pods -l 'tier notin (deprecated,legacy)'
+#
+#   # Label exists
+#   kubectl get pods -l version
+#
+#   # Label doesn't exist
+#   kubectl get pods -l '!canary'
+#
+#
+#   ADDING/REMOVING LABELS:
+#   ───────────────────────
+#
+#   # Add label to pod
+#   kubectl label pod nginx-pod new-label=value
+#
+#   # Update existing label
+#   kubectl label pod nginx-pod app=apache --overwrite
+#
+#   # Remove label
+#   kubectl label pod nginx-pod version-
+#
+#   # Add label to all pods matching selector
+#   kubectl label pods -l app=nginx environment=production
+#
+#
+#   CHECKING SERVICE ENDPOINTS:
+#   ───────────────────────────
+#
+#   # View which pods a service selected
+#   kubectl get endpoints nginx-service
+#
+#   # Describe service to see selector and endpoints
+#   kubectl describe service nginx-service
+#
+#   # Check if service has endpoints
+#   kubectl get endpoints nginx-service -o jsonpath='{.subsets[*].addresses[*].ip}'
+#
+#
+#   DEBUGGING LABEL MISMATCHES:
+#   ───────────────────────────
+#
+#   Problem: Service has no endpoints
+#
+#   Step 1: Check service selector
+#   kubectl get service nginx-service -o yaml | grep -A 5 selector
+#
+#   Step 2: Check pod labels
+#   kubectl get pods --show-labels
+#
+#   Step 3: Check if any pods match
+#   kubectl get pods -l app=nginx,tier=frontend
+#
+#   Step 4: Check endpoints
+#   kubectl get endpoints nginx-service
+#
+#   If no endpoints:
+#   ├─ Verify selector labels match pod labels exactly
+#   ├─ Check for typos in label names or values
+#   ├─ Verify pods are in Running state
+#   └─ Check if pods are in the same namespace
+#
+#
+#   COMMON ISSUES:
+#   ──────────────
+#
+#   Issue 1: Service has no endpoints
+#   └─ Solution: Verify selector matches pod labels
+#
+#   Issue 2: Deployment not managing pods
+#   └─ Solution: Verify selector.matchLabels matches template.metadata.labels
+#
+#   Issue 3: Pods not showing up in kubectl get
+#   └─ Solution: Check label selector syntax
+#
+#   Issue 4: StatefulSet pods not getting DNS
+#   └─ Solution: Verify headless service selector matches pod labels
+#
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           QUICK REFERENCE                                 ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   LABEL SYNTAX:
+#   ─────────────
+#   metadata:
+#     labels:
+#       key: value
+#
+#   SELECTOR SYNTAX (Service):
+#   ──────────────────────────
+#   spec:
+#     selector:
+#       key: value
+#
+#   SELECTOR SYNTAX (Deployment):
+#   ──────────────────────────────
+#   spec:
+#     selector:
+#       matchLabels:
+#         key: value
+#       matchExpressions:
+#       - key: environment
+#         operator: In
+#         values: [prod, staging]
+#
+#   KUBECTL COMMANDS:
+#   ─────────────────
+#   kubectl get pods --show-labels
+#   kubectl get pods -l key=value
+#   kubectl label pod <name> key=value
+#   kubectl get endpoints <service-name>
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           SUMMARY                                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   KEY TAKEAWAYS:
+#   ──────────────
+#
+#   1. Labels are key-value pairs that identify and organize resources
+#   2. Selectors are queries that find resources with matching labels
+#   3. Services use selectors to find pods to route traffic to
+#   4. Deployments/StatefulSets use selectors to find pods to manage
+#   5. Selector labels MUST match pod template labels
+#   6. Pods can have extra labels beyond what selector requires
+#   7. Use consistent labeling strategy across all resources
+#   8. Test label matching with kubectl get pods -l <selector>
+#
+#   💡 REMEMBER:
+#   ────────────
+#   Labels connect everything in Kubernetes!
+#   Service → Selector → Labels → Pods
+#   Deployment → Selector → Labels → Pods
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           RELATED FILES                                   ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║  • service-loadbalancer.yaml  - Service with selectors                   ║
+# ║  • deployment.yaml            - Deployment with selectors                ║
+# ║  • statefulset-simple.yaml    - StatefulSet with selectors               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝

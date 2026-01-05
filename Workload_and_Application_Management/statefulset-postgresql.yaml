@@ -1,0 +1,465 @@
+# ==============================================================================
+# PostgreSQL StatefulSet - Complete Learning Guide
+# ==============================================================================
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                     STATEFULSET ARCHITECTURE OVERVIEW                       │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   ┌──────────────────┐
+#   │   Client App     │
+#   └────────┬─────────┘
+#            │
+#            ▼
+#   ┌──────────────────────────────────────────────────────────────┐
+#   │              Service: postgres-lb (ClusterIP)                │
+#   │              (Load balances to any healthy pod)              │
+#   └─────────────────────────┬────────────────────────────────────┘
+#                             │
+#          ┌──────────────────┼──────────────────┐
+#          ▼                  ▼                  ▼
+#   ┌────────────┐     ┌────────────┐     ┌────────────┐
+#   │ postgres-0 │     │ postgres-1 │     │ postgres-2 │
+#   │  (Pod)     │     │  (Pod)     │     │  (Pod)     │
+#   └─────┬──────┘     └─────┬──────┘     └─────┬──────┘
+#         │                  │                  │
+#         ▼                  ▼                  ▼
+#   ┌────────────┐     ┌────────────┐     ┌────────────┐
+#   │   PVC-0    │     │   PVC-1    │     │   PVC-2    │
+#   │  (2Gi)     │     │  (2Gi)     │     │  (2Gi)     │
+#   └────────────┘     └────────────┘     └────────────┘
+#
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                         DNS RESOLUTION FLOW                                 │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   Headless Service (clusterIP: None) creates individual DNS entries:
+#
+#      DNS Query                              Resolves To
+#   ────────────────────────────────────────────────────────────────────
+#   postgres-0.postgres.default.svc.cluster.local  →  Pod IP of postgres-0
+#   postgres-1.postgres.default.svc.cluster.local  →  Pod IP of postgres-1
+#   postgres-2.postgres.default.svc.cluster.local  →  Pod IP of postgres-2
+#
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                      POD CREATION ORDER (OrderedReady)                      │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   Step 1: Create postgres-0
+#           │
+#           ▼
+#   ┌─────────────────────────────────────────┐
+#   │  postgres-0: Pending → Running → Ready  │
+#   └─────────────────────────────────────────┘
+#           │
+#           │ (Wait until Ready)
+#           ▼
+#   Step 2: Create postgres-1
+#           │
+#           ▼
+#   ┌─────────────────────────────────────────┐
+#   │  postgres-1: Pending → Running → Ready  │
+#   └─────────────────────────────────────────┘
+#           │
+#           │ (Wait until Ready)
+#           ▼
+#   Step 3: Create postgres-2
+#           │
+#           ▼
+#   ┌─────────────────────────────────────────┐
+#   │  postgres-2: Pending → Running → Ready  │
+#   └─────────────────────────────────────────┘
+#
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                          POD DELETION ORDER                                 │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   Deletion happens in REVERSE order (highest ordinal first):
+#
+#   postgres-2 deleted first  ─┐
+#                              ├─→  Waits for termination
+#   postgres-1 deleted second ─┤
+#                              ├─→  Waits for termination
+#   postgres-0 deleted last   ─┘
+#
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                      DATA PERSISTENCE GUARANTEE                             │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   When pod postgres-0 is deleted and recreated:
+#
+#   ┌────────────────┐         ┌────────────────┐
+#   │  postgres-0    │  ───►   │  postgres-0    │  (Same name!)
+#   │  (Old Pod)     │ DELETE  │  (New Pod)     │
+#   └───────┬────────┘         └───────┬────────┘
+#           │                          │
+#           │                          │
+#           ▼                          ▼
+#   ┌────────────────────────────────────────────┐
+#   │        PVC: postgres-storage-postgres-0    │  ← Data preserved!
+#   │              (Never deleted)               │
+#   └────────────────────────────────────────────┘
+#
+# ==============================================================================
+
+# ==============================================================================
+# RESOURCE 1: HEADLESS SERVICE
+# ==============================================================================
+#
+# PURPOSE: Provides stable DNS names for each pod in the StatefulSet.
+#
+# WHY HEADLESS (clusterIP: None)?
+# ─────────────────────────────────
+#   • Normal Service:  Single VIP → Load balances to random pod
+#   • Headless Service: No VIP    → Returns all pod IPs directly
+#
+# This allows:
+#   1. Direct pod-to-pod communication (for database replication)
+#   2. Stable DNS names like: postgres-0.postgres.default.svc.cluster.local
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres # StatefulSet's serviceName must match this!
+  labels:
+    app: postgres
+spec:
+  ports:
+    - port: 5432
+      name: postgres
+  clusterIP: None # ◄── This makes it a Headless Service
+  selector:
+    app: postgres # Selects pods with label app=postgres
+
+---
+# ==============================================================================
+# RESOURCE 2: CLIENT-FACING SERVICE
+# ==============================================================================
+#
+# PURPOSE: Load-balanced endpoint for client applications.
+#
+# FLOW:
+#   Client → postgres-lb:5432 → Any healthy postgres pod
+#
+# WHY SEPARATE FROM HEADLESS?
+# ─────────────────────────────
+#   • Headless: For internal pod discovery (replication, coordination)
+#   • This Service: For external client connections (load balanced)
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-lb
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP # Use LoadBalancer for external access
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+
+---
+# ==============================================================================
+# RESOURCE 3: CONFIGMAP - Non-sensitive Configuration
+# ==============================================================================
+#
+# PURPOSE: Store configuration that doesn't need to be secret.
+#
+# ENVIRONMENT VARIABLES SET:
+#   POSTGRES_DB   → Database name to create
+#   POSTGRES_USER → Username for the database
+#   PGDATA        → Data directory path (subdirectory avoids permission issues)
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+data:
+  POSTGRES_DB: mydb
+  POSTGRES_USER: admin
+  PGDATA: /var/lib/postgresql/data/pgdata
+
+---
+# ==============================================================================
+# RESOURCE 4: SECRET - Sensitive Configuration
+# ==============================================================================
+#
+# PURPOSE: Store sensitive data like passwords.
+#
+# NOTE: In production, use:
+#   • External Secrets Operator
+#   • HashiCorp Vault
+#   • Sealed Secrets
+#
+# stringData vs data:
+#   stringData: Plain text (Kubernetes encodes it)
+#   data:       Base64 encoded (you must encode it yourself)
+#
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: supersecret123
+
+---
+# ==============================================================================
+# RESOURCE 5: STATEFULSET
+# ==============================================================================
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                     STATEFULSET vs DEPLOYMENT                               │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+#   Feature              │  Deployment         │  StatefulSet
+#   ─────────────────────┼─────────────────────┼────────────────────────
+#   Pod Names            │  random-suffix      │  ordered (app-0, app-1)
+#   Creation Order       │  parallel           │  sequential (0→1→2)
+#   Deletion Order       │  any order          │  reverse (2→1→0)
+#   Storage              │  shared or none     │  unique PVC per pod
+#   Network Identity     │  none               │  stable DNS per pod
+#   Use Case             │  stateless apps     │  databases, queues
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  # ============================================================================
+  # SERVICE NAME - Links to Headless Service
+  # ============================================================================
+  # This MUST match the headless service name exactly.
+  # It enables the DNS naming pattern: <pod-name>.<serviceName>.<namespace>.svc
+  serviceName: postgres
+
+  # ============================================================================
+  # REPLICAS - Number of Pods
+  # ============================================================================
+  replicas: 3
+
+  # ============================================================================
+  # POD MANAGEMENT POLICY
+  # ============================================================================
+  #
+  #   OrderedReady (default):
+  #   ────────────────────────
+  #   • Pods created one at a time: 0 → 1 → 2
+  #   • Each pod must be Running and Ready before next starts
+  #   • Best for: Databases that need primary elected first
+  #
+  #   Parallel:
+  #   ─────────
+  #   • All pods created simultaneously
+  #   • Best for: Stateless workloads that don't need ordering
+  #
+  podManagementPolicy: OrderedReady
+
+  # ============================================================================
+  # UPDATE STRATEGY
+  # ============================================================================
+  #
+  #   RollingUpdate:
+  #   ──────────────
+  #   • Updates pods in REVERSE order: 2 → 1 → 0
+  #   • partition: N means only update pods with ordinal >= N
+  #     - partition: 0  → Update all pods
+  #     - partition: 2  → Only update postgres-2 (canary testing)
+  #
+  #   OnDelete:
+  #   ─────────
+  #   • Pods only update when manually deleted
+  #   • Full control over update timing
+  #
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+
+  # ============================================================================
+  # SELECTOR - How StatefulSet finds its pods
+  # ============================================================================
+  selector:
+    matchLabels:
+      app: postgres
+
+  # ============================================================================
+  # POD TEMPLATE
+  # ============================================================================
+  template:
+    metadata:
+      labels:
+        app: postgres # Must match selector.matchLabels
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:13
+
+          ports:
+            - containerPort: 5432
+              name: postgres
+
+          # ======================================================================
+          # ENVIRONMENT CONFIGURATION
+          # ======================================================================
+          # envFrom injects ALL keys from ConfigMap/Secret as env variables
+          #
+          #   ConfigMap postgres-config provides:
+          #     POSTGRES_DB, POSTGRES_USER, PGDATA
+          #
+          #   Secret postgres-secret provides:
+          #     POSTGRES_PASSWORD
+          #
+          envFrom:
+            - configMapRef:
+                name: postgres-config
+            - secretRef:
+                name: postgres-secret
+
+          # ======================================================================
+          # HEALTH PROBES
+          # ======================================================================
+          #
+          # LIVENESS PROBE:
+          # ────────────────
+          #   "Is the container alive?"
+          #   • If fails: Container is restarted
+          #   • initialDelaySeconds: Wait before first check (DB needs time to start)
+          #
+          # READINESS PROBE:
+          # ─────────────────
+          #   "Can this pod receive traffic?"
+          #   • If fails: Pod removed from Service endpoints
+          #   • Critical for StatefulSet: Next pod won't start until current is Ready
+          #
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "admin", "-d", "mydb"]
+            initialDelaySeconds: 30 # Wait 30s before first check
+            periodSeconds: 10 # Check every 10s
+            timeoutSeconds: 5 # Timeout after 5s
+            failureThreshold: 3 # Restart after 3 failures
+
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "admin", "-d", "mydb"]
+            initialDelaySeconds: 5 # Start checking after 5s
+            periodSeconds: 5 # Check every 5s
+            timeoutSeconds: 3 # Timeout after 3s
+            failureThreshold: 3 # Mark NotReady after 3 failures
+
+          # ======================================================================
+          # RESOURCE REQUESTS AND LIMITS
+          # ======================================================================
+          #
+          # REQUESTS:
+          # ─────────
+          #   Guaranteed resources. Scheduler uses these to place pods.
+          #   Pod only scheduled on node with >= requested resources.
+          #
+          # LIMITS:
+          # ───────
+          #   Maximum resources. Container killed if exceeds memory limit.
+          #   Container throttled if exceeds CPU limit.
+          #
+          #   Formula: requests <= limits
+          #
+          resources:
+            requests:
+              cpu: 250m # 250 millicores = 0.25 CPU
+              memory: 256Mi # 256 Mebibytes
+            limits:
+              cpu: 500m # 500 millicores = 0.5 CPU
+              memory: 512Mi # 512 Mebibytes
+
+          # ======================================================================
+          # VOLUME MOUNTS
+          # ======================================================================
+          # Mounts the PVC created by volumeClaimTemplates into the container
+          #
+          volumeMounts:
+            - name: postgres-storage # Must match volumeClaimTemplates name
+              mountPath: /var/lib/postgresql/data
+
+  # ============================================================================
+  # VOLUME CLAIM TEMPLATES
+  # ============================================================================
+  #
+  # This is the "magic" of StatefulSets for persistent storage.
+  #
+  # HOW IT WORKS:
+  # ─────────────
+  #
+  #   volumeClaimTemplates acts as a "cookie cutter" for PVCs:
+  #
+  #   Template Name: postgres-storage
+  #        │
+  #        ├─► Creates PVC: postgres-storage-postgres-0  (for postgres-0)
+  #        ├─► Creates PVC: postgres-storage-postgres-1  (for postgres-1)
+  #        └─► Creates PVC: postgres-storage-postgres-2  (for postgres-2)
+  #
+  #   PVC Naming Pattern: <template-name>-<statefulset-name>-<ordinal>
+  #
+  # KEY BEHAVIOR:
+  # ─────────────
+  #   • PVCs are NOT deleted when StatefulSet is deleted
+  #   • PVCs are NOT deleted when pods are deleted
+  #   • Same PVC reattaches when pod recreates → Data persists!
+  #
+  # ACCESS MODES:
+  # ─────────────
+  #   • ReadWriteOnce (RWO): Single node read/write (most common)
+  #   • ReadOnlyMany  (ROX): Multiple nodes read-only
+  #   • ReadWriteMany (RWX): Multiple nodes read/write (NFS, etc.)
+  #
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: standard      # Uncomment to specify storage class
+        resources:
+          requests:
+            storage: 2Gi # Each pod gets 2Gi of storage
+
+# ==============================================================================
+# COMMANDS TO TEST THIS CONFIGURATION
+# ==============================================================================
+#
+# Deploy:
+#   kubectl apply -f statefulset-postgresql.yaml
+#
+# Watch pods create (sequential):
+#   kubectl get pods -w -l app=postgres
+#
+# Check StatefulSet:
+#   kubectl get statefulset postgres
+#   kubectl describe statefulset postgres
+#
+# Check PVCs created:
+#   kubectl get pvc
+#
+# Connect to specific pod:
+#   kubectl exec -it postgres-0 -- psql -U admin -d mydb
+#
+# Test DNS resolution:
+#   kubectl run -it --rm debug --image=busybox -- nslookup postgres-0.postgres
+#
+# Delete pod (watch it recreate with same name and PVC):
+#   kubectl delete pod postgres-0
+#
+# Scale up/down:
+#   kubectl scale statefulset postgres --replicas=5
+#   kubectl scale statefulset postgres --replicas=2
+#
+# Clean up:
+#   kubectl delete -f statefulset-postgresql.yaml
+#   kubectl delete pvc -l app=postgres   # Delete PVCs manually!
+#
+# ==============================================================================

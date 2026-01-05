@@ -489,30 +489,30 @@ sequenceDiagram
 
     Note over Client: Client wants to connect to database
     
-    rect rgb(255, 152, 0)
+    rect rgb(255, 184, 108)
         Note over Client,DNS: Step 1: DNS Resolution
         Client->>DNS: Resolve "postgres-lb.default.svc.cluster.local"
         DNS-->>Client: Returns ClusterIP: 10.96.100.50
     end
     
-    rect rgb(33, 150, 243)
+    rect rgb(139, 233, 253)
         Note over Client,SVC: Step 2: Connect to Service IP
         Client->>SVC: TCP Connect to 10.96.100.50:5432
     end
     
-    rect rgb(76, 175, 80)
+    rect rgb(80, 250, 123)
         Note over SVC,IPTABLES: Step 3: Load Balancing
         SVC->>IPTABLES: Service receives packet
         Note over IPTABLES: kube-proxy rules select<br/>random healthy pod endpoint
         IPTABLES->>POD: Forward to postgres-1:5432<br/>(example: selected randomly)
     end
     
-    rect rgb(156, 39, 176)
+    rect rgb(189, 147, 249)
         Note over POD: Step 4: Database Processing
         POD->>POD: PostgreSQL processes query
     end
     
-    rect rgb(255, 193, 7)
+    rect rgb(255, 121, 198)
         Note over POD,Client: Step 5: Response
         POD-->>Client: Return query results
     end
@@ -572,19 +572,19 @@ sequenceDiagram
 
     Note over Client: Client needs to connect to PRIMARY specifically
     
-    rect rgb(255, 152, 0)
+    rect rgb(255, 184, 108)
         Note over Client,DNS: Step 1: DNS Resolution (Headless)
         Client->>DNS: Resolve "postgres-0.postgres.default.svc.cluster.local"
         DNS-->>Client: Returns Pod IP: 10.244.0.15 (direct!)
     end
     
-    rect rgb(76, 175, 80)
+    rect rgb(80, 250, 123)
         Note over Client,POD0: Step 2: Direct Connection
         Client->>POD0: TCP Connect directly to 10.244.0.15:5432
         Note over POD0: No load balancing!<br/>Always reaches postgres-0
     end
     
-    rect rgb(156, 39, 176)
+    rect rgb(189, 147, 249)
         Note over POD0,Client: Step 3: Response
         POD0-->>Client: Return results
     end

@@ -475,6 +475,146 @@ graph TB
 
 ---
 
+## How Client Connection Works (Step-by-Step)
+
+When a client application wants to connect to PostgreSQL, here's exactly what happens:
+
+```mermaid
+sequenceDiagram
+    participant Client as 👤 Client App
+    participant DNS as 🌐 Cluster DNS
+    participant SVC as 📡 postgres-lb Service
+    participant IPTABLES as 🔀 kube-proxy/iptables
+    participant POD as 🟢 postgres-0/1/2
+
+    Note over Client: Client wants to connect to database
+    
+    rect rgb(255, 243, 224)
+        Note over Client,DNS: Step 1: DNS Resolution
+        Client->>DNS: Resolve "postgres-lb.default.svc.cluster.local"
+        DNS-->>Client: Returns ClusterIP: 10.96.100.50
+    end
+    
+    rect rgb(227, 242, 253)
+        Note over Client,SVC: Step 2: Connect to Service IP
+        Client->>SVC: TCP Connect to 10.96.100.50:5432
+    end
+    
+    rect rgb(232, 245, 233)
+        Note over SVC,IPTABLES: Step 3: Load Balancing
+        SVC->>IPTABLES: Service receives packet
+        Note over IPTABLES: kube-proxy rules select<br/>random healthy pod endpoint
+        IPTABLES->>POD: Forward to postgres-1:5432<br/>(example: selected randomly)
+    end
+    
+    rect rgb(243, 229, 245)
+        Note over POD: Step 4: Database Processing
+        POD->>POD: PostgreSQL processes query
+    end
+    
+    rect rgb(255, 253, 231)
+        Note over POD,Client: Step 5: Response
+        POD-->>Client: Return query results
+    end
+```
+
+### Connection Flow Breakdown
+
+```mermaid
+flowchart LR
+    subgraph Step1["Step 1: DNS Lookup"]
+        C1[Client] -->|"postgres-lb?"| DNS1[CoreDNS]
+        DNS1 -->|"10.96.100.50"| C1
+    end
+    
+    subgraph Step2["Step 2: Service Routing"]
+        C2[Client] -->|":5432"| SVC2[ClusterIP<br/>10.96.100.50]
+    end
+    
+    subgraph Step3["Step 3: Pod Selection"]
+        SVC3[Service] -->|"iptables NAT"| LB3{Load<br/>Balancer}
+        LB3 -->|"33%"| P0[postgres-0]
+        LB3 -->|"33%"| P1[postgres-1]
+        LB3 -->|"33%"| P2[postgres-2]
+    end
+    
+    subgraph Step4["Step 4: Data Access"]
+        POD4[Selected Pod] -->|"Read/Write"| PVC4[PVC Storage]
+    end
+    
+    style C1 fill:#e1f5fe,stroke:#01579b
+    style C2 fill:#e1f5fe,stroke:#01579b
+    style DNS1 fill:#fff3e0,stroke:#e65100
+    style SVC2 fill:#fff3e0,stroke:#e65100
+    style SVC3 fill:#fff3e0,stroke:#e65100
+    style LB3 fill:#ffecb3,stroke:#ff8f00
+    style P0 fill:#c8e6c9,stroke:#2e7d32
+    style P1 fill:#bbdefb,stroke:#1565c0
+    style P2 fill:#bbdefb,stroke:#1565c0
+    style POD4 fill:#c8e6c9,stroke:#2e7d32
+    style PVC4 fill:#fff9c4,stroke:#f9a825
+```
+
+### Two Ways to Connect
+
+| Method | Service | Use Case | Example Connection String |
+|--------|---------|----------|---------------------------|
+| **Load Balanced** | `postgres-lb` | General client apps | `postgresql://admin:pass@postgres-lb:5432/mydb` |
+| **Direct Pod** | `postgres` (headless) | Replication, specific pod access | `postgresql://admin:pass@postgres-0.postgres:5432/mydb` |
+
+### Direct Pod Access (via Headless Service)
+
+```mermaid
+sequenceDiagram
+    participant Client as 👤 Client App
+    participant DNS as 🌐 Cluster DNS
+    participant POD0 as 🟢 postgres-0
+
+    Note over Client: Client needs to connect to PRIMARY specifically
+    
+    rect rgb(255, 243, 224)
+        Note over Client,DNS: Step 1: DNS Resolution (Headless)
+        Client->>DNS: Resolve "postgres-0.postgres.default.svc.cluster.local"
+        DNS-->>Client: Returns Pod IP: 10.244.0.15 (direct!)
+    end
+    
+    rect rgb(232, 245, 233)
+        Note over Client,POD0: Step 2: Direct Connection
+        Client->>POD0: TCP Connect directly to 10.244.0.15:5432
+        Note over POD0: No load balancing!<br/>Always reaches postgres-0
+    end
+    
+    rect rgb(243, 229, 245)
+        Note over POD0,Client: Step 3: Response
+        POD0-->>Client: Return results
+    end
+```
+
+### When to Use Each Connection Method
+
+```mermaid
+flowchart TD
+    START{What's your<br/>use case?}
+    
+    START -->|"General read/write"| LB[Use postgres-lb<br/>Load Balanced]
+    START -->|"Need specific pod"| DIRECT[Use postgres headless<br/>Direct Access]
+    START -->|"Database replication"| DIRECT
+    START -->|"Write to primary only"| PRIMARY[Connect to<br/>postgres-0.postgres]
+    START -->|"Read from replicas"| REPLICA[Connect to<br/>postgres-1.postgres<br/>or postgres-2.postgres]
+    
+    LB --> LB_EX["postgresql://admin:pass@<br/>postgres-lb:5432/mydb"]
+    PRIMARY --> PRIMARY_EX["postgresql://admin:pass@<br/>postgres-0.postgres:5432/mydb"]
+    REPLICA --> REPLICA_EX["postgresql://admin:pass@<br/>postgres-1.postgres:5432/mydb"]
+    
+    style START fill:#fff3e0,stroke:#e65100
+    style LB fill:#c8e6c9,stroke:#2e7d32
+    style DIRECT fill:#bbdefb,stroke:#1565c0
+    style PRIMARY fill:#c8e6c9,stroke:#2e7d32
+    style REPLICA fill:#bbdefb,stroke:#1565c0
+```
+
+---
+
 ## Quick Reference Commands
 
 | Action | Command |

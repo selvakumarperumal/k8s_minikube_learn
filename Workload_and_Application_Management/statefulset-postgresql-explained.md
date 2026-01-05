@@ -12,7 +12,7 @@ kubectl apply -f statefulset-postgresql.yaml
 
 ```mermaid
 graph TB
-    subgraph "kubectl apply -f statefulset-postgresql.yaml"
+    subgraph CMD_BOX["⚡ kubectl apply -f statefulset-postgresql.yaml"]
         CMD[kubectl apply]
     end
     
@@ -29,6 +29,19 @@ graph TB
     STS --> PVC0[PVC: postgres-storage-postgres-0]
     STS --> PVC1[PVC: postgres-storage-postgres-1]
     STS --> PVC2[PVC: postgres-storage-postgres-2]
+    
+    style CMD fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style SVC1 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style SVC2 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style CM fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style SEC fill:#ff79c6,stroke:#6272a4,color:#282a36
+    style STS fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style POD0 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style POD1 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style POD2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style PVC0 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style PVC1 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style PVC2 fill:#f1fa8c,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -56,12 +69,12 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    subgraph Control Plane
+    subgraph CP["🎛️ Control Plane"]
         STS_CTRL[StatefulSet Controller]
         SCHED[Scheduler]
     end
     
-    subgraph etcd
+    subgraph ETCD["💾 etcd"]
         STS_DEF[StatefulSet Definition<br/>replicas: 3]
     end
     
@@ -71,6 +84,12 @@ flowchart TD
     CREATE[Create Pod postgres-0]
     CREATE --> SCHED
     SCHED -->|Assign to Node| NODE[Worker Node]
+    
+    style STS_CTRL fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style SCHED fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style STS_DEF fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style CREATE fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style NODE fill:#ffb86c,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -121,7 +140,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    subgraph "Pod: postgres-0"
+    subgraph POD["🟢 Pod: postgres-0"]
         INIT[Container Starts]
         ENV[Load Environment Variables]
         MOUNT[Mount PVC at /var/lib/postgresql/data]
@@ -134,7 +153,7 @@ flowchart TD
     MOUNT --> PG_START
     PG_START -->|pg_isready succeeds| READY
     
-    subgraph "Environment Variables Loaded"
+    subgraph ENVS["⚙️ Environment Variables Loaded"]
         E1[POSTGRES_DB=mydb]
         E2[POSTGRES_USER=admin]
         E3[POSTGRES_PASSWORD=supersecret123]
@@ -145,6 +164,16 @@ flowchart TD
     ENV -.-> E2
     ENV -.-> E3
     ENV -.-> E4
+    
+    style INIT fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style ENV fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style MOUNT fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style PG_START fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style READY fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style E1 fill:#ff79c6,stroke:#6272a4,color:#282a36
+    style E2 fill:#ff79c6,stroke:#6272a4,color:#282a36
+    style E3 fill:#ff79c6,stroke:#6272a4,color:#282a36
+    style E4 fill:#ff79c6,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -153,7 +182,7 @@ flowchart TD
 
 ```mermaid
 graph LR
-    subgraph "Headless Service: postgres"
+    subgraph HS["🔍 Headless Service: postgres"]
         DNS[DNS Records Created]
     end
     
@@ -164,6 +193,14 @@ graph LR
     R0 --> IP0[Pod IP: 10.244.0.10]
     R1 --> IP1[Pod IP: 10.244.0.11]
     R2 --> IP2[Pod IP: 10.244.0.12]
+    
+    style DNS fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style R0 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style R1 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style R2 fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style IP0 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style IP1 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style IP2 fill:#8be9fd,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -172,13 +209,13 @@ graph LR
 
 ```mermaid
 flowchart TD
-    CLIENT[Client Application]
+    CLIENT[👤 Client Application]
     
-    subgraph "Option 1: Load Balanced (postgres-lb)"
+    subgraph OPT1["🟢 Option 1: Load Balanced"]
         LB[Service: postgres-lb<br/>ClusterIP: 10.96.100.50]
     end
     
-    subgraph "Option 2: Direct Pod Access (postgres)"
+    subgraph OPT2["🔵 Option 2: Direct Pod Access"]
         HEADLESS[Headless Service]
         DNS0[postgres-0.postgres...]
         DNS1[postgres-1.postgres...]
@@ -193,6 +230,15 @@ flowchart TD
     DNS0 --> POD0
     CLIENT -->|"Connect to postgres-1.postgres:5432"| DNS1
     DNS1 --> POD1
+    
+    style CLIENT fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style LB fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style HEADLESS fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style DNS0 fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style DNS1 fill:#bd93f9,stroke:#6272a4,color:#282a36
+    style POD0 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style POD1 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style POD2 fill:#8be9fd,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -231,15 +277,15 @@ kubectl scale statefulset postgres --replicas=5
 
 ```mermaid
 flowchart LR
-    subgraph "Before: 3 Replicas"
+    subgraph BEFORE["⬅️ Before: 3 Replicas"]
         P0[postgres-0]
         P1[postgres-1]
         P2[postgres-2]
     end
     
-    SCALE[Scale to 5]
+    SCALE[➡️ Scale to 5]
     
-    subgraph "After: 5 Replicas"
+    subgraph AFTER["✅ After: 5 Replicas"]
         P0_2[postgres-0]
         P1_2[postgres-1]
         P2_2[postgres-2]
@@ -254,6 +300,17 @@ flowchart LR
     SCALE --> P4
     
     Note1[Created in order:<br/>postgres-3 first<br/>then postgres-4]
+    
+    style P0 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style P1 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style P2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style SCALE fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style P0_2 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style P1_2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style P2_2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style P3 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style P4 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style Note1 fill:#bd93f9,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -266,7 +323,7 @@ kubectl scale statefulset postgres --replicas=2
 
 ```mermaid
 flowchart LR
-    subgraph "Before: 5 Replicas"
+    subgraph BEFORE["⬅️ Before: 5 Replicas"]
         P0[postgres-0]
         P1[postgres-1]
         P2[postgres-2]
@@ -274,9 +331,9 @@ flowchart LR
         P4[postgres-4]
     end
     
-    SCALE[Scale to 2]
+    SCALE[➡️ Scale to 2]
     
-    subgraph "After: 2 Replicas"
+    subgraph AFTER["✅ After: 2 Replicas"]
         P0_2[postgres-0]
         P1_2[postgres-1]
     end
@@ -290,6 +347,17 @@ flowchart LR
     DELETED[❌ Deleted in reverse:<br/>postgres-4 first<br/>then postgres-3<br/>then postgres-2]
     
     Note2[⚠️ PVCs NOT deleted!<br/>Data preserved for scale-up]
+    
+    style P0 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style P1 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style P2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style P3 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style P4 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style SCALE fill:#ffb86c,stroke:#6272a4,color:#282a36
+    style P0_2 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style P1_2 fill:#8be9fd,stroke:#6272a4,color:#282a36
+    style DELETED fill:#ff5555,stroke:#6272a4,color:#282a36
+    style Note2 fill:#f1fa8c,stroke:#6272a4,color:#282a36
 ```
 
 ---
@@ -337,7 +405,7 @@ kubectl delete -f statefulset-postgresql.yaml
 
 ```mermaid
 graph TD
-    DELETE[kubectl delete -f statefulset-postgresql.yaml]
+    DELETE[🗑️ kubectl delete -f statefulset-postgresql.yaml]
     
     DELETE -->|"✓ Deleted"| SVC1[Service: postgres]
     DELETE -->|"✓ Deleted"| SVC2[Service: postgres-lb]
@@ -351,6 +419,18 @@ graph TD
     DELETE -.->|"❌ NOT Deleted!"| PVC2[PVC: postgres-storage-postgres-2]
     
     NOTE[⚠️ PVCs must be deleted manually:<br/>kubectl delete pvc -l app=postgres]
+    
+    style DELETE fill:#ff5555,stroke:#6272a4,color:#282a36
+    style SVC1 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style SVC2 fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style CM fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style SEC fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style STS fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style PODS fill:#50fa7b,stroke:#6272a4,color:#282a36
+    style PVC0 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style PVC1 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style PVC2 fill:#f1fa8c,stroke:#6272a4,color:#282a36
+    style NOTE fill:#ffb86c,stroke:#6272a4,color:#282a36
 ```
 
 ---

@@ -387,28 +387,33 @@ graph TB
         end
     end
     
+    %% Client Traffic (Orange lines)
     CLIENT --> LB
     LB --> POD0
     LB --> POD1
     LB --> POD2
     
+    %% DNS Resolution (Blue dashed lines)
     HEADLESS -.->|DNS| POD0
     HEADLESS -.->|DNS| POD1
     HEADLESS -.->|DNS| POD2
     
+    %% ConfigMap injection (Purple lines)
     CM --> POD0
     CM --> POD1
     CM --> POD2
     
+    %% Secret injection (Red lines)
     SEC --> POD0
     SEC --> POD1
     SEC --> POD2
     
+    %% Storage mounting (Yellow lines)
     POD0 --> PVC0
     POD1 --> PVC1
     POD2 --> PVC2
 
-    %% Styling
+    %% Node Styling
     style CLIENT fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#01579b
     style LB fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#e65100
     style HEADLESS fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#e65100
@@ -420,9 +425,43 @@ graph TB
     style PVC0 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#f57f17
     style PVC1 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#f57f17
     style PVC2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#f57f17
+
+    %% Link Styling (Colored Lines)
+    %% Client to LB (Orange - Traffic)
+    linkStyle 0 stroke:#e65100,stroke-width:3px
+    %% LB to Pods (Orange - Traffic)
+    linkStyle 1 stroke:#e65100,stroke-width:2px
+    linkStyle 2 stroke:#e65100,stroke-width:2px
+    linkStyle 3 stroke:#e65100,stroke-width:2px
+    %% Headless DNS (Blue - DNS Resolution)
+    linkStyle 4 stroke:#1565c0,stroke-width:2px,stroke-dasharray:5
+    linkStyle 5 stroke:#1565c0,stroke-width:2px,stroke-dasharray:5
+    linkStyle 6 stroke:#1565c0,stroke-width:2px,stroke-dasharray:5
+    %% ConfigMap (Purple - Config Injection)
+    linkStyle 7 stroke:#7b1fa2,stroke-width:2px
+    linkStyle 8 stroke:#7b1fa2,stroke-width:2px
+    linkStyle 9 stroke:#7b1fa2,stroke-width:2px
+    %% Secret (Red/Pink - Secret Injection)
+    linkStyle 10 stroke:#c2185b,stroke-width:2px
+    linkStyle 11 stroke:#c2185b,stroke-width:2px
+    linkStyle 12 stroke:#c2185b,stroke-width:2px
+    %% PVC (Yellow - Storage)
+    linkStyle 13 stroke:#f9a825,stroke-width:3px
+    linkStyle 14 stroke:#f9a825,stroke-width:3px
+    linkStyle 15 stroke:#f9a825,stroke-width:3px
 ```
 
 ### Color Legend
+
+| Line Color | Connection Type | Description |
+|------------|-----------------|-------------|
+| 🟧 **Orange** | Client Traffic | Client → Service → Pods (network requests) |
+| 🔵 **Blue Dashed** | DNS Resolution | Headless Service → Pods (DNS lookup) |
+| 🟪 **Purple** | ConfigMap | Config injection into pods (env vars) |
+| 🟥 **Pink/Red** | Secret | Secret injection into pods (passwords) |
+| 🟨 **Yellow** | Storage | Pods → PVCs (persistent data mount) |
+
+### Node Color Legend
 
 | Color | Component Type | Description |
 |-------|---------------|-------------|

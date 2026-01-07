@@ -1,0 +1,103 @@
+# ============================================================================
+# DAEMONSET - Node Logger Example
+# ============================================================================
+# A DaemonSet ensures that a copy of a Pod runs on ALL (or selected) nodes
+# in the cluster. When nodes are added, Pods are automatically scheduled.
+# When nodes are removed, those Pods are garbage collected.
+#
+# Common Use Cases:
+# - Log collection daemons (fluentd, logstash)
+# - Node monitoring agents (prometheus node-exporter)
+# - Storage daemons (ceph, glusterd)
+# - Network plugins (calico, weave)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-logger
+  labels:
+    app: node-logger
+spec:
+  # ---------------------------------------------------------------------------
+  # SELECTOR - Must match template labels
+  # ---------------------------------------------------------------------------
+  selector:
+    matchLabels:
+      app: node-logger
+
+  # ---------------------------------------------------------------------------
+  # UPDATE STRATEGY - How to handle updates to the DaemonSet
+  # ---------------------------------------------------------------------------
+  # Options:
+  # - RollingUpdate (default): Updates pods one node at a time
+  # - OnDelete: Only updates when you manually delete old pods
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1 # Update one node at a time (can be number or %)
+
+  # ---------------------------------------------------------------------------
+  # POD TEMPLATE - Defines the pod that runs on each node
+  # ---------------------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        app: node-logger # Must match selector.matchLabels
+    spec:
+      # -----------------------------------------------------------------------
+      # TOLERATIONS - Allow scheduling on nodes with taints
+      # -----------------------------------------------------------------------
+      # By default, DaemonSets don't run on control-plane nodes (they have taints)
+      # This toleration allows our pod to run on control-plane nodes too
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: logger
+          image: busybox
+          # Simple logging script that runs continuously
+          command:
+            - sh
+            - -c
+            - |
+              echo "Node logger starting on node: $(hostname)"
+              echo "Node name: $NODE_NAME"
+              echo "Pod name: $POD_NAME"
+              echo "Namespace: $POD_NAMESPACE"
+              while true; do
+                echo "[$(date)] Monitoring node $NODE_NAME..."
+                sleep 30
+              done
+
+          # ---------------------------------------------------------------------
+          # DOWNWARD API - Inject pod/node metadata as environment variables
+          # ---------------------------------------------------------------------
+          # This allows the container to know about its own metadata
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName # The node this pod runs on
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name # This pod's name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace # This pod's namespace
+
+          # ---------------------------------------------------------------------
+          # RESOURCE LIMITS - Prevent pods from consuming too many resources
+          # ---------------------------------------------------------------------
+          # Important for DaemonSets since they run on every node!
+          resources:
+            requests:
+              cpu: 50m # 50 millicores = 0.05 CPU
+              memory: 64Mi # 64 Mebibytes
+            limits:
+              cpu: 100m # Maximum 100 millicores
+              memory: 128Mi # Maximum 128 Mebibytes

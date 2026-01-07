@@ -33,9 +33,11 @@ flowchart LR
     P2 -->|"Can schedule"| N2
     P2 -->|"Can schedule"| N3
     
-    style N2 fill:#ffcccc
-    style N3 fill:#ffcccc
-    style P2 fill:#ccffcc
+    style N1 fill:#44475a,stroke:#bd93f9,color:#f8f8f2
+    style N2 fill:#ff5555,stroke:#ff79c6,color:#f8f8f2
+    style N3 fill:#ff5555,stroke:#ff79c6,color:#f8f8f2
+    style P1 fill:#6272a4,stroke:#bd93f9,color:#f8f8f2
+    style P2 fill:#50fa7b,stroke:#8be9fd,color:#282a36
 ```
 
 ---
@@ -59,6 +61,11 @@ flowchart LR
     T --> K["key: identifier<br/>(e.g., gpu, env)"]
     T --> V["value: optional<br/>(e.g., true, production)"]
     T --> E["effect: action<br/>(NoSchedule, etc.)"]
+    
+    style T fill:#bd93f9,stroke:#ff79c6,color:#f8f8f2
+    style K fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style V fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style E fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
 ```
 
 ### Common Commands
@@ -124,6 +131,15 @@ flowchart TD
     Effect -->|NoSchedule| Block["❌ Cannot schedule"]
     Effect -->|PreferNoSchedule| Prefer["⚠️ Try other nodes first"]
     Effect -->|NoExecute| Evict["❌ Cannot schedule<br/>+ Evict existing"]
+    
+    style Start fill:#bd93f9,stroke:#ff79c6,color:#f8f8f2
+    style Check fill:#8be9fd,stroke:#50fa7b,color:#282a36
+    style Match fill:#8be9fd,stroke:#50fa7b,color:#282a36
+    style Effect fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style Allow fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style Block fill:#ff5555,stroke:#ff79c6,color:#f8f8f2
+    style Prefer fill:#f1fa8c,stroke:#ffb86c,color:#282a36
+    style Evict fill:#ff5555,stroke:#ff79c6,color:#f8f8f2
 ```
 
 ---

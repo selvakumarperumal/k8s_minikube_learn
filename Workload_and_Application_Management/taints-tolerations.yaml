@@ -1,0 +1,293 @@
+# ============================================================================
+# TAINTS AND TOLERATIONS - Complete Examples
+# ============================================================================
+# Taints are applied to NODES to repel pods
+# Tolerations are applied to PODS to allow scheduling on tainted nodes
+#
+# Taint Effects:
+# - NoSchedule: New pods won't be scheduled (existing pods stay)
+# - PreferNoSchedule: Try to avoid scheduling (soft rule)
+# - NoExecute: Evict existing pods + prevent new scheduling
+# ============================================================================
+
+---
+# ============================================================================
+# EXAMPLE 1: GPU Workload - Only GPU pods on GPU nodes
+# ============================================================================
+# First, taint the node (run this command):
+# kubectl taint nodes <node-name> gpu=true:NoSchedule
+#
+# This pod tolerates the GPU taint and can run on GPU nodes
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod
+  labels:
+    workload: gpu
+spec:
+  containers:
+    - name: cuda-app
+      image: nvidia/cuda:11.0-base
+      command: ["sh", "-c", "echo 'GPU workload running' && sleep 3600"]
+      resources:
+        requests:
+          memory: "512Mi"
+          cpu: "250m"
+        limits:
+          memory: "1Gi"
+          cpu: "500m"
+          nvidia.com/gpu: "1"
+
+  # Toleration allows this pod to be scheduled on GPU-tainted nodes
+  tolerations:
+    - key: "gpu"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+
+  # Also use nodeSelector to ensure it ONLY runs on GPU nodes
+  nodeSelector:
+    hardware: gpu
+
+---
+# ============================================================================
+# EXAMPLE 2: Dedicated Nodes for Production
+# ============================================================================
+# Taint command: kubectl taint nodes <node-name> environment=production:NoSchedule
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: production-app
+  labels:
+    app: production-app
+    environment: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: production-app
+  template:
+    metadata:
+      labels:
+        app: production-app
+        environment: production
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+
+      # Tolerate production node taint
+      tolerations:
+        - key: "environment"
+          operator: "Equal"
+          value: "production"
+          effect: "NoSchedule"
+
+---
+# ============================================================================
+# EXAMPLE 3: Tolerate ANY Taint (Use with caution!)
+# ============================================================================
+# This pod can run on ANY node, regardless of taints
+# Useful for system daemons that must run everywhere
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tolerates-all
+  labels:
+    app: system-daemon
+spec:
+  containers:
+    - name: daemon
+      image: busybox
+      command:
+        [
+          "sh",
+          "-c",
+          "while true; do echo 'System daemon running'; sleep 60; done",
+        ]
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "100m"
+
+  # Empty key with Exists operator matches ALL taints
+  tolerations:
+    - operator: "Exists" # Matches any key
+      # No key, value, or effect = tolerates everything
+
+---
+# ============================================================================
+# EXAMPLE 4: Control Plane Tolerations
+# ============================================================================
+# By default, control-plane nodes have taints to prevent workload scheduling
+# This is how DaemonSets run on control-plane nodes
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: control-plane-pod
+  labels:
+    app: control-plane-monitor
+spec:
+  containers:
+    - name: monitor
+      image: busybox
+      command:
+        [
+          "sh",
+          "-c",
+          "while true; do echo 'Monitoring control plane'; sleep 30; done",
+        ]
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "100m"
+
+  tolerations:
+    # Tolerate control-plane taint (Kubernetes 1.24+)
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+    # Also tolerate legacy master taint (older Kubernetes versions)
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  # Target control-plane node
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+
+---
+# ============================================================================
+# EXAMPLE 5: NoExecute with TolerationSeconds
+# ============================================================================
+# NoExecute effect evicts existing pods. TolerationSeconds allows
+# the pod to stay for a limited time before being evicted.
+#
+# Taint command: kubectl taint nodes <node-name> maintenance=true:NoExecute
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: graceful-eviction-pod
+  labels:
+    app: graceful-app
+spec:
+  containers:
+    - name: app
+      image: nginx:alpine
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "200m"
+
+  tolerations:
+    - key: "maintenance"
+      operator: "Equal"
+      value: "true"
+      effect: "NoExecute"
+      tolerationSeconds: 300 # Stay for 5 minutes, then evict
+
+---
+# ============================================================================
+# EXAMPLE 6: PreferNoSchedule - Soft Preference
+# ============================================================================
+# PreferNoSchedule is a "soft" version of NoSchedule
+# Scheduler will TRY to avoid the node but will schedule if necessary
+#
+# Taint command: kubectl taint nodes <node-name> spot=true:PreferNoSchedule
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: non-critical-pod
+  labels:
+    app: non-critical
+spec:
+  containers:
+    - name: worker
+      image: busybox
+      command:
+        ["sh", "-c", "while true; do echo 'Non-critical work'; sleep 60; done"]
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "100m"
+
+  # This pod can run on spot nodes if no other nodes are available
+  tolerations:
+    - key: "spot"
+      operator: "Equal"
+      value: "true"
+      effect: "PreferNoSchedule"
+
+---
+# ============================================================================
+# EXAMPLE 7: Multiple Tolerations
+# ============================================================================
+# A pod can have multiple tolerations for different scenarios
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-toleration-pod
+  labels:
+    app: flexible-workload
+spec:
+  containers:
+    - name: app
+      image: nginx:alpine
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "200m"
+
+  tolerations:
+    # Tolerate GPU nodes
+    - key: "gpu"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+
+    # Tolerate high-memory nodes
+    - key: "high-memory"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+    # Tolerate spot instances (soft)
+    - key: "spot-instance"
+      operator: "Exists"
+      effect: "PreferNoSchedule"
+
+    # Handle node unreachable (built-in taint)
+    - key: "node.kubernetes.io/unreachable"
+      operator: "Exists"
+      effect: "NoExecute"
+      tolerationSeconds: 60

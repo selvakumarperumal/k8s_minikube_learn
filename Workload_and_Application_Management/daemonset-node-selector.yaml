@@ -1,0 +1,143 @@
+# ============================================================================
+# DAEMONSET WITH NODE SELECTOR - GPU Monitor Example
+# ============================================================================
+# A DaemonSet that runs ONLY on nodes with specific labels (gpu=true).
+# Unlike a regular DaemonSet that runs on ALL nodes, this uses nodeSelector
+# to target specific nodes.
+#
+# Use Cases:
+# - GPU monitoring (only on GPU nodes)
+# - SSD-specific storage daemons
+# - Specialized hardware agents
+# ============================================================================
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-monitor
+  labels:
+    app: gpu-monitor
+spec:
+  # ---------------------------------------------------------------------------
+  # SELECTOR - Must match template labels
+  # ---------------------------------------------------------------------------
+  selector:
+    matchLabels:
+      app: gpu-monitor
+
+  # ---------------------------------------------------------------------------
+  # UPDATE STRATEGY
+  # ---------------------------------------------------------------------------
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  # ---------------------------------------------------------------------------
+  # POD TEMPLATE
+  # ---------------------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        app: gpu-monitor
+    spec:
+      # -----------------------------------------------------------------------
+      # NODE SELECTOR - Only run on GPU nodes
+      # -----------------------------------------------------------------------
+      # This is the KEY difference from a regular DaemonSet
+      # Pod will ONLY be scheduled on nodes with label: gpu=true
+      nodeSelector:
+        gpu: "true"
+
+      # -----------------------------------------------------------------------
+      # TOLERATIONS - Allow scheduling on tainted nodes
+      # -----------------------------------------------------------------------
+      tolerations:
+        # Tolerate GPU node taints
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        # Tolerate control-plane if needed
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+      containers:
+        - name: monitor
+          image: busybox
+          command:
+            - sh
+            - -c
+            - |
+              echo "GPU monitor running on node: $(hostname)"
+              echo "Node: $NODE_NAME"
+              while true; do
+                echo "[$(date)] Monitoring GPU on $NODE_NAME..."
+                # In real scenario, this would check GPU health
+                sleep 60
+              done
+
+          # -------------------------------------------------------------------
+          # DOWNWARD API - Get node/pod info
+          # -------------------------------------------------------------------
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          # -------------------------------------------------------------------
+          # RESOURCES - Important for node-level workloads
+          # -------------------------------------------------------------------
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# STEP 1: Label a node with gpu=true
+#   kubectl label nodes minikube gpu=true
+#
+# STEP 2: Verify the label
+#   kubectl get nodes --show-labels | grep gpu
+#
+# STEP 3: Apply this DaemonSet
+#   kubectl apply -f daemonset-node-selector.yaml
+#
+# STEP 4: Check if pod is running
+#   kubectl get pods -l app=gpu-monitor -o wide
+#   kubectl get daemonset gpu-monitor
+#
+# STEP 5: View logs
+#   kubectl logs -l app=gpu-monitor
+#
+# STEP 6: Remove the GPU label to see pod terminate
+#   kubectl label nodes minikube gpu-
+#   kubectl get pods -l app=gpu-monitor   # Pod should be terminating
+#
+# CLEANUP:
+#   kubectl delete -f daemonset-node-selector.yaml
+#   kubectl label nodes minikube gpu-
+#
+# ============================================================================
+# COMPARISON: Regular DaemonSet vs NodeSelector DaemonSet
+# ============================================================================
+#
+# Regular DaemonSet:
+#   - Runs on ALL nodes (or all nodes with matching tolerations)
+#   - Use for: log collectors, monitoring agents, network plugins
+#
+# NodeSelector DaemonSet:
+#   - Runs on ONLY nodes with matching labels
+#   - Use for: GPU workloads, SSD-specific, specialized hardware
+#
+# ============================================================================

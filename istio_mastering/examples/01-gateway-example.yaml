@@ -1,0 +1,55 @@
+# Istio Gateway Example
+# ============================================================================
+# A Gateway describes a load balancer at the edge of the mesh that receives
+# incoming or outgoing HTTP/TCP connections.
+# ============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: bookinfo-gateway
+spec:
+  # Use Istio's default ingress gateway
+  selector:
+    istio: ingressgateway
+
+  # Server configuration
+  servers:
+    # HTTP server
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "bookinfo.example.com"
+        - "*.bookinfo.example.com" # Wildcard subdomain
+
+    # HTTPS server (optional)
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "bookinfo.example.com"
+      tls:
+        mode: SIMPLE
+        credentialName: bookinfo-tls-secret # Secret with TLS cert
+
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# 1. Apply this gateway:
+#    kubectl apply -f 01-gateway-example.yaml
+#
+# 2. Get the ingress gateway IP:
+#    kubectl get svc istio-ingressgateway -n istio-system
+#
+# 3. Test (replace IP):
+#    curl -H "Host: bookinfo.example.com" http://<INGRESS-IP>/
+#
+# 4. For Minikube:
+#    minikube tunnel  # In separate terminal
+#    curl -H "Host: bookinfo.example.com" http://$(minikube ip)/
+#
+# ============================================================================

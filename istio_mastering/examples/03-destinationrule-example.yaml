@@ -1,0 +1,86 @@
+# Istio DestinationRule Example
+# ============================================================================
+# DestinationRule defines policies that apply to traffic after routing has
+# occurred. This includes load balancing, connection pool, and outlier detection.
+# ============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews-destination
+spec:
+  # The service this rule applies to
+  host: reviews
+
+  # ===========================================================================
+  # TRAFFIC POLICY - Applies to all subsets unless overridden
+  # ===========================================================================
+  trafficPolicy:
+    # Load balancing algorithm
+    loadBalancer:
+      simple: ROUND_ROBIN # Options: ROUND_ROBIN, LEAST_CONN, RANDOM, PASSTHROUGH
+
+    # Connection pool settings
+    connectionPool:
+      tcp:
+        maxConnections: 100 # Max TCP connections
+        connectTimeout: 10s # Connection timeout
+      http:
+        h2UpgradePolicy: UPGRADE # Upgrade HTTP/1.1 to HTTP/2
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+
+    # Circuit breaker / Outlier detection
+    outlierDetection:
+      consecutive5xxErrors: 5 # Errors before ejection
+      interval: 30s # Analysis interval
+      baseEjectionTime: 30s # Initial ejection time
+      maxEjectionPercent: 50 # Max % of endpoints ejected
+
+  # ===========================================================================
+  # SUBSETS - Define versions of the service
+  # ===========================================================================
+  subsets:
+    # Version 1 - Stable
+    - name: v1
+      labels:
+        version: v1 # Pods with label version=v1
+
+    # Version 2 - Canary with different load balancing
+    - name: v2
+      labels:
+        version: v2
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN # Override: use least connections
+
+    # Version 3 - Testing
+    - name: v3
+      labels:
+        version: v3
+      trafficPolicy:
+        connectionPool:
+          http:
+            http2MaxRequests: 500 # Lower limit for testing
+
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# 1. Ensure you have deployments with version labels:
+#    kubectl get pods --show-labels
+#    # Should see: version=v1, version=v2, version=v3
+#
+# 2. Apply this DestinationRule:
+#    kubectl apply -f 03-destinationrule-example.yaml
+#
+# 3. View the rule:
+#    kubectl get destinationrules
+#    kubectl describe dr reviews-destination
+#
+# 4. Check proxy configuration:
+#    istioctl proxy-config cluster deploy/productpage | grep reviews
+#
+# ============================================================================

@@ -1,0 +1,165 @@
+# Istio Authorization Policies
+# ============================================================================
+# Control which services can access other services
+# ============================================================================
+
+---
+# =============================================================================
+# DEFAULT DENY - Block all traffic (whitelist approach)
+# =============================================================================
+# Apply this first, then create ALLOW policies
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: production
+spec: {} # Empty spec = deny all traffic
+
+---
+# =============================================================================
+# ALLOW SPECIFIC SERVICE
+# =============================================================================
+# Only allow frontend to access backend
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: backend-allow-frontend
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: backend # Apply to backend pods
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Allow from frontend service account
+            principals:
+              - cluster.local/ns/default/sa/frontend-sa
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/api/*"]
+
+---
+# =============================================================================
+# ALLOW FROM NAMESPACE
+# =============================================================================
+# Allow all services from specific namespace
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-from-monitoring
+  namespace: default
+spec:
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces: ["monitoring", "istio-system"]
+
+---
+# =============================================================================
+# ALLOW HEALTH CHECKS
+# =============================================================================
+# Allow health check paths from anywhere
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-health-checks
+  namespace: default
+spec:
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths: ["/health", "/ready", "/healthz"]
+            methods: ["GET"]
+
+---
+# =============================================================================
+# DENY SPECIFIC PATH
+# =============================================================================
+# Block access to admin endpoints
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-admin-path
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: my-api
+  action: DENY
+  rules:
+    - to:
+        - operation:
+            paths: ["/admin/*", "/internal/*"]
+
+---
+# =============================================================================
+# ALLOW WITH CONDITIONS (JWT claims)
+# =============================================================================
+# Allow only users with specific JWT claims
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-admin-role
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: admin-service
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            requestPrincipals: ["https://auth.example.com/*"]
+      when:
+        - key: request.auth.claims[role]
+          values: ["admin"]
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# RECOMMENDED APPROACH:
+# ---------------------
+# 1. Apply deny-all policy first
+# 2. Add ALLOW policies for legitimate traffic
+# 3. Test thoroughly before production
+#
+# COMMANDS:
+# ---------
+# # Apply policies
+# kubectl apply -f 06-authorization-policy.yaml
+#
+# # View all policies
+# kubectl get authorizationpolicies --all-namespaces
+#
+# # Test authorization
+# kubectl exec deploy/frontend -- curl -s http://backend:8080/api/data
+#
+# # Check authorization config for a pod
+# istioctl x authz check deploy/backend
+#
+# # Debug denied requests (check envoy logs)
+# kubectl logs deploy/backend -c istio-proxy | grep authz
+#
+# SERVICE ACCOUNT SETUP:
+# ----------------------
+# # Create service account for frontend
+# kubectl create serviceaccount frontend-sa
+#
+# # Use in deployment
+# spec:
+#   template:
+#     spec:
+#       serviceAccountName: frontend-sa
+#
+# ============================================================================

@@ -1,0 +1,155 @@
+# Circuit Breaker and Resiliency Configuration
+# ============================================================================
+# Configure retries, timeouts, and circuit breakers
+# ============================================================================
+
+---
+# =============================================================================
+# VIRTUALSERVICE - Timeouts and Retries
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-service-resilient
+spec:
+  hosts:
+    - my-service
+  http:
+    - route:
+        - destination:
+            host: my-service
+
+      # Overall request timeout
+      timeout: 30s
+
+      # Retry configuration
+      retries:
+        attempts: 3 # Number of retry attempts
+        perTryTimeout: 10s # Timeout for each attempt
+        retryOn: 5xx,reset,connect-failure,retriable-4xx
+
+---
+# =============================================================================
+# DESTINATION RULE - Circuit Breaker
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: my-service-circuit-breaker
+spec:
+  host: my-service
+  trafficPolicy:
+    # Connection pool limits
+    connectionPool:
+      tcp:
+        maxConnections: 100 # Max concurrent TCP connections
+        connectTimeout: 10s # TCP connection timeout
+      http:
+        http1MaxPendingRequests: 100 # Max queued HTTP/1.1 requests
+        http2MaxRequests: 1000 # Max concurrent HTTP/2 requests
+        maxRequestsPerConnection: 10 # Recycle connection after N requests
+        maxRetries: 3 # Max concurrent retries
+
+    # Outlier detection (Circuit Breaker)
+    outlierDetection:
+      consecutive5xxErrors: 5 # Errors before host is ejected
+      interval: 10s # Analysis interval
+      baseEjectionTime: 30s # Initial ejection duration
+      maxEjectionPercent: 50 # Max % of hosts that can be ejected
+      minHealthPercent: 30 # Stop ejecting if less than this % healthy
+
+---
+# =============================================================================
+# AGGRESSIVE CIRCUIT BREAKER (for testing)
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: aggressive-circuit-breaker
+spec:
+  host: flaky-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 10 # Very limited connections
+      http:
+        http1MaxPendingRequests: 10
+        http2MaxRequests: 100
+        maxRetries: 1
+
+    outlierDetection:
+      consecutive5xxErrors: 2 # Eject after just 2 errors
+      interval: 5s # Check every 5 seconds
+      baseEjectionTime: 60s # Eject for 1 minute
+      maxEjectionPercent: 100 # Can eject all hosts
+
+---
+# =============================================================================
+# FAULT INJECTION (for testing resiliency)
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: fault-injection-test
+spec:
+  hosts:
+    - ratings
+  http:
+    - fault:
+        # Inject 5-second delay to 50% of requests
+        delay:
+          percentage:
+            value: 50.0
+          fixedDelay: 5s
+
+        # Return HTTP 500 for 10% of requests
+        abort:
+          percentage:
+            value: 10.0
+          httpStatus: 500
+
+      route:
+        - destination:
+            host: ratings
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# 1. Apply resilient configuration:
+#    kubectl apply -f 07-circuit-breaker.yaml
+#
+# 2. Test timeouts:
+#    # Add delay to your service and see timeout trigger
+#    kubectl exec deploy/client -- curl -s http://my-service:8080/slow
+#
+# 3. Test circuit breaker:
+#    # Generate errors to trigger circuit breaker
+#    for i in {1..20}; do
+#      kubectl exec deploy/client -- curl -s http://flaky-service:8080/fail
+#    done
+#
+# 4. Check circuit breaker stats:
+#    kubectl exec deploy/client -c istio-proxy -- \
+#      pilot-agent request GET stats | grep outlier
+#
+# 5. View ejected hosts:
+#    kubectl exec deploy/client -c istio-proxy -- \
+#      pilot-agent request GET clusters | grep health
+#
+# FAULT INJECTION TESTING:
+# ------------------------
+# 1. Apply fault injection VirtualService
+# 2. Send requests and observe failures/delays:
+#    for i in {1..10}; do
+#      time kubectl exec deploy/client -- curl -s http://ratings:8080/
+#    done
+#
+# 3. Verify your app handles failures gracefully
+# 4. Remove fault injection when done testing:
+#    kubectl delete vs fault-injection-test
+#
+# ============================================================================

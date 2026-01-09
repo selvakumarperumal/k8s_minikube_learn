@@ -1,0 +1,80 @@
+# Istio VirtualService Example
+# ============================================================================
+# VirtualService defines routing rules that control how requests are routed
+# to services within the mesh.
+# ============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-routing
+spec:
+  # Which hosts this applies to
+  hosts:
+    - reviews # Kubernetes service name
+
+  # Attach to gateway for external traffic
+  gateways:
+    - bookinfo-gateway # External traffic
+    - mesh # Internal mesh traffic
+
+  # HTTP routing rules (evaluated in order from top to bottom)
+  http:
+    # =========================================================================
+    # RULE 1: Route test users to v3
+    # =========================================================================
+    - match:
+        - headers:
+            end-user:
+              exact: "jason" # Header: end-user: jason
+      route:
+        - destination:
+            host: reviews
+            subset: v3 # Defined in DestinationRule
+
+    # =========================================================================
+    # RULE 2: Route mobile users to v2
+    # =========================================================================
+    - match:
+        - headers:
+            user-agent:
+              regex: ".*Mobile.*" # Mobile user agents
+      route:
+        - destination:
+            host: reviews
+            subset: v2
+
+    # =========================================================================
+    # RULE 3: Traffic splitting (Canary)
+    # =========================================================================
+    - route:
+        - destination:
+            host: reviews
+            subset: v1
+          weight: 80 # 80% to v1
+        - destination:
+            host: reviews
+            subset: v2
+          weight: 20 # 20% to v2
+
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# 1. First apply the DestinationRule that defines subsets:
+#    kubectl apply -f 03-destinationrule-example.yaml
+#
+# 2. Apply this VirtualService:
+#    kubectl apply -f 02-virtualservice-example.yaml
+#
+# 3. Test header-based routing:
+#    curl -H "end-user: jason" http://reviews:8080/
+#
+# 4. Test traffic splitting (run multiple times):
+#    for i in {1..10}; do curl http://reviews:8080/; done
+#
+# 5. View routing configuration:
+#    kubectl get virtualservices
+#    kubectl describe vs reviews-routing
+#
+# ============================================================================

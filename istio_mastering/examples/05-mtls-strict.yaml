@@ -1,0 +1,115 @@
+# Istio mTLS Configuration
+# ============================================================================
+# Enable mutual TLS (mTLS) for secure service-to-service communication
+# ============================================================================
+
+---
+# =============================================================================
+# MESH-WIDE STRICT mTLS
+# =============================================================================
+# Apply to istio-system namespace to enforce for entire mesh
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system # Mesh-wide policy
+spec:
+  mtls:
+    mode: STRICT # Only accept mTLS connections
+
+---
+# =============================================================================
+# NAMESPACE-LEVEL mTLS
+# =============================================================================
+# Enable strict mTLS for specific namespace
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: production # Only this namespace
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# =============================================================================
+# PERMISSIVE MODE (for migration)
+# =============================================================================
+# Accept both mTLS and plain text - useful when migrating to mTLS
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: permissive-mode
+  namespace: default
+spec:
+  mtls:
+    mode: PERMISSIVE # Accept both encrypted and unencrypted
+
+---
+# =============================================================================
+# WORKLOAD-SPECIFIC mTLS
+# =============================================================================
+# Disable mTLS for specific workload (e.g., health checks)
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: disable-mtls-for-health
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+  mtls:
+    mode: STRICT
+  # Disable mTLS for specific port
+  portLevelMtls:
+    8080:
+      mode: DISABLE # Health check port
+
+---
+# =============================================================================
+# DESTINATION RULE - Require mTLS when calling services
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: require-mtls
+  namespace: default
+spec:
+  host: "*.default.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL # Use Istio certificates for mTLS
+
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# 1. Check current mTLS status:
+#    istioctl x authz check deploy/my-app
+#
+# 2. Apply strict mTLS for namespace:
+#    kubectl apply -f 05-mtls-strict.yaml
+#
+# 3. Verify mTLS is working:
+#    istioctl proxy-config secret deploy/my-app
+#
+# 4. Test connection (should work):
+#    kubectl exec deploy/frontend -- curl http://backend:8080
+#
+# 5. View PeerAuthentication policies:
+#    kubectl get peerauthentication --all-namespaces
+#
+# MIGRATION PATH:
+# ---------------
+# 1. Start with PERMISSIVE mode
+# 2. Monitor for issues in observability tools
+# 3. Gradually switch namespaces to STRICT
+# 4. Finally enable mesh-wide STRICT
+#
+# ============================================================================

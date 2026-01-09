@@ -91,7 +91,7 @@ spec:
         - key: "environment"
           operator: "Equal"
           value: "production"
-          effect: "NoSchedule"
+          effect: "NoExecute"
 
 ---
 # ============================================================================
@@ -291,3 +291,116 @@ spec:
       operator: "Exists"
       effect: "NoExecute"
       tolerationSeconds: 60
+# ============================================================================
+# HOW TO RUN - STEP BY STEP
+# ============================================================================
+#
+# =========================
+# STEP 1: APPLY THIS FILE
+# =========================
+# kubectl apply -f taints-tolerations.yaml
+# kubectl get pods
+#
+# =========================
+# STEP 2: TEST PRODUCTION DEPLOYMENT (Example 2)
+# =========================
+# Add taint:
+#   kubectl taint nodes minikube environment=production:NoExecute
+#
+# Check pods (production-app should stay, others evicted):
+#   kubectl get pods
+#
+# If deployment unchanged, restart it:
+#   kubectl apply -f taints-tolerations.yaml
+#   kubectl rollout restart deployment/production-app
+#   kubectl get pods -w
+#
+# Cleanup:
+#   kubectl taint nodes minikube environment=production:NoExecute-
+#
+# =========================
+# STEP 3: TEST GPU POD (Example 1)
+# =========================
+# Add taint:
+#   kubectl taint nodes minikube gpu=true:NoSchedule
+#
+# Apply and check:
+#   kubectl apply -f taints-tolerations.yaml
+#   kubectl get pods
+#
+# Cleanup:
+#   kubectl taint nodes minikube gpu=true:NoSchedule-
+#
+# =========================
+# STEP 4: TEST MAINTENANCE (Example 5)
+# =========================
+# Add NoExecute taint (evicts pods without toleration):
+#   kubectl taint nodes minikube maintenance=true:NoExecute
+#
+# Check (graceful-eviction-pod tolerates for 300s then evicts):
+#   kubectl get pods -w
+#
+# Cleanup:
+#   kubectl taint nodes minikube maintenance=true:NoExecute-
+#
+# =========================
+# STEP 5: TEST TOLERATE-ALL POD (Example 3)
+# =========================
+# Add any taint:
+#   kubectl taint nodes minikube test=anything:NoExecute
+#
+# Check (tolerates-all pod still runs!):
+#   kubectl get pods
+#
+# Cleanup:
+#   kubectl taint nodes minikube test=anything:NoExecute-
+#
+# ============================================================================
+# USEFUL COMMANDS
+# ============================================================================
+#
+# VIEW NODE TAINTS:
+#   kubectl describe node minikube | grep -A5 Taints
+#
+# VIEW POD TOLERATIONS:
+#   kubectl describe pod <pod-name> | grep -A5 Tolerations
+#
+# WHY IS POD PENDING?
+#   kubectl describe pod <pod-name> | grep -A10 Events
+#
+# REMOVE ALL TAINTS WITH A KEY:
+#   kubectl taint nodes minikube environment-
+#   kubectl taint nodes minikube gpu-
+#
+# ============================================================================
+# FULL CLEANUP
+# ============================================================================
+# kubectl delete -f taints-tolerations.yaml
+# kubectl taint nodes minikube environment- 2>/dev/null
+# kubectl taint nodes minikube gpu- 2>/dev/null
+# kubectl taint nodes minikube maintenance- 2>/dev/null
+# kubectl taint nodes minikube spot- 2>/dev/null
+#
+# ============================================================================
+# IMPORTANT NOTES
+# ============================================================================
+#
+# 1. EFFECT MUST MATCH:
+#    Taint:      environment=production:NoExecute
+#    Toleration: effect: "NoExecute"     ✓ Works
+#    Toleration: effect: "NoSchedule"    ✗ Fails!
+#
+# 2. OMIT EFFECT = MATCH ALL:
+#    tolerations:
+#      - key: "environment"
+#        value: "production"
+#        # No effect = matches ALL effects
+#
+# 3. MUST TOLERATE ALL TAINTS ON NODE:
+#    If node has 2 taints, pod must tolerate BOTH
+#
+# 4. TOLERATE EVERYTHING:
+#    tolerations:
+#      - operator: "Exists"  # Matches ALL taints
+#
+# ============================================================================

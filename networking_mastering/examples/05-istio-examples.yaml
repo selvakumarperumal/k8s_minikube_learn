@@ -1,0 +1,662 @@
+# ============================================================================
+# ISTIO SERVICE MESH - Complete Examples
+# ============================================================================
+# This file contains Istio configuration examples
+#
+# PREREQUISITES:
+# --------------
+# 1. Start Minikube with enough resources:
+#    minikube start --cpus=4 --memory=8192
+#
+# 2. Install Istio:
+#    curl -L https://istio.io/downloadIstio | sh -
+#    cd istio-*
+#    export PATH=$PWD/bin:$PATH
+#    istioctl install --set profile=demo -y
+#
+# 3. Enable sidecar injection:
+#    kubectl label namespace default istio-injection=enabled
+#
+# 4. Verify:
+#    kubectl get pods -n istio-system
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f 05-istio-examples.yaml
+#
+# 2. Wait for pods:
+#    kubectl wait --for=condition=ready pod --all --timeout=120s
+#
+# 3. Test (see individual examples)
+#
+# 4. Cleanup:
+#    kubectl delete -f 05-istio-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# SAMPLE APPLICATION: Two versions for traffic management
+# ============================================================================
+
+# Version 1 Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-v1
+  labels:
+    app: myapp
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v1
+    spec:
+      containers:
+        - name: myapp
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from VERSION 1!"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+
+---
+# Version 2 Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-v2
+  labels:
+    app: myapp
+    version: v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v2
+    spec:
+      containers:
+        - name: myapp
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from VERSION 2! (New features!)"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+
+---
+# Service (selects both v1 and v2)
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+  labels:
+    app: myapp
+spec:
+  selector:
+    app: myapp # Matches both v1 and v2
+  ports:
+    - port: 80
+      targetPort: 5678
+      name: http
+
+---
+# ============================================================================
+# EXAMPLE 1: Gateway (Entry Point for External Traffic)
+# ============================================================================
+# Gateway defines ports/protocols for external access
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: myapp-gateway
+spec:
+  # ---------------------------------------------------------------------------
+  # selector: Which Istio gateway to configure
+  # ---------------------------------------------------------------------------
+  selector:
+    istio: ingressgateway # Default Istio ingress gateway
+
+  # ---------------------------------------------------------------------------
+  # servers: Ports and protocols to accept
+  # ---------------------------------------------------------------------------
+  servers:
+    # HTTP server on port 80
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*" # Accept all hosts (for demo)
+        # - "myapp.example.com"  # Or specific host
+
+# HOW TO TEST:
+# ------------
+# # Get Istio ingress IP/Port
+# export INGRESS_HOST=$(minikube ip)
+# export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+#
+# echo "URL: http://$INGRESS_HOST:$INGRESS_PORT"
+#
+# # Test (after VirtualService is applied)
+# curl http://$INGRESS_HOST:$INGRESS_PORT
+
+---
+# ============================================================================
+# EXAMPLE 2: VirtualService - All Traffic to V1
+# ============================================================================
+# Route 100% of traffic to version 1
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-all-v1
+spec:
+  # ---------------------------------------------------------------------------
+  # hosts: Which services this applies to
+  # ---------------------------------------------------------------------------
+  hosts:
+    - myapp # Internal service name
+
+  # ---------------------------------------------------------------------------
+  # gateways: Apply to these gateways
+  # ---------------------------------------------------------------------------
+  gateways:
+    - myapp-gateway # External traffic via gateway
+    - mesh # Internal mesh traffic
+
+  # ---------------------------------------------------------------------------
+  # http: HTTP routing rules
+  # ---------------------------------------------------------------------------
+  http:
+    - route:
+        - destination:
+            host: myapp
+            subset: v1 # All to v1
+          weight: 100
+
+# HOW TO TEST:
+# ------------
+# # Apply this VirtualService
+# kubectl apply -f <this-section>
+#
+# # Test multiple times - should always return V1
+# for i in {1..10}; do curl -s http://$INGRESS_HOST:$INGRESS_PORT; done
+# # Output: Hello from VERSION 1! (10 times)
+
+---
+# ============================================================================
+# EXAMPLE 3: DestinationRule - Define Subsets (Versions)
+# ============================================================================
+# Subsets define how to identify different versions
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: myapp-destination
+spec:
+  # ---------------------------------------------------------------------------
+  # host: Which service this applies to
+  # ---------------------------------------------------------------------------
+  host: myapp
+
+  # ---------------------------------------------------------------------------
+  # subsets: Define versions using pod labels
+  # ---------------------------------------------------------------------------
+  subsets:
+    - name: v1
+      labels:
+        version: v1 # Pods with version=v1
+
+    - name: v2
+      labels:
+        version: v2 # Pods with version=v2
+
+# NOTE: DestinationRule MUST be applied for VirtualService subsets to work!
+
+---
+# ============================================================================
+# EXAMPLE 4: VirtualService - Canary Deployment (90/10)
+# ============================================================================
+# Route 90% to v1, 10% to v2 (canary)
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-canary
+spec:
+  hosts:
+    - myapp
+  gateways:
+    - myapp-gateway
+    - mesh
+  http:
+    - route:
+        - destination:
+            host: myapp
+            subset: v1
+          weight: 90 # 90% to v1
+        - destination:
+            host: myapp
+            subset: v2
+          weight: 10 # 10% to v2 (canary)
+
+# HOW TO TEST:
+# ------------
+# # Apply this VirtualService (removes previous one)
+# kubectl apply -f <this-section>
+#
+# # Test multiple times - should see ~90% v1, ~10% v2
+# for i in {1..20}; do curl -s http://$INGRESS_HOST:$INGRESS_PORT; done
+# # Mix of VERSION 1 and VERSION 2 responses
+
+---
+# ============================================================================
+# EXAMPLE 5: VirtualService - Header-Based Routing
+# ============================================================================
+# Route based on HTTP headers (A/B testing, feature flags)
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-header-routing
+spec:
+  hosts:
+    - myapp
+  gateways:
+    - myapp-gateway
+    - mesh
+  http:
+    # ---------------------------------------------------------------------------
+    # Rule 1: If header x-version=v2, route to v2
+    # ---------------------------------------------------------------------------
+    - match:
+        - headers:
+            x-version:
+              exact: "v2"
+      route:
+        - destination:
+            host: myapp
+            subset: v2
+
+    # ---------------------------------------------------------------------------
+    # Rule 2: If header x-user-type=beta, route to v2
+    # ---------------------------------------------------------------------------
+    - match:
+        - headers:
+            x-user-type:
+              exact: "beta"
+      route:
+        - destination:
+            host: myapp
+            subset: v2
+
+    # ---------------------------------------------------------------------------
+    # Default: Route to v1
+    # ---------------------------------------------------------------------------
+    - route:
+        - destination:
+            host: myapp
+            subset: v1
+
+# HOW TO TEST:
+# ------------
+# # Apply this VirtualService
+# kubectl apply -f <this-section>
+#
+# # Default - goes to v1
+# curl http://$INGRESS_HOST:$INGRESS_PORT
+# # Output: Hello from VERSION 1!
+#
+# # With x-version header - goes to v2
+# curl -H "x-version: v2" http://$INGRESS_HOST:$INGRESS_PORT
+# # Output: Hello from VERSION 2!
+#
+# # With x-user-type header - goes to v2
+# curl -H "x-user-type: beta" http://$INGRESS_HOST:$INGRESS_PORT
+# # Output: Hello from VERSION 2!
+
+---
+# ============================================================================
+# EXAMPLE 6: VirtualService - Path-Based Routing
+# ============================================================================
+# Different paths go to different versions
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-path-routing
+spec:
+  hosts:
+    - myapp
+  gateways:
+    - myapp-gateway
+  http:
+    # ---------------------------------------------------------------------------
+    # /v2/* goes to v2
+    # ---------------------------------------------------------------------------
+    - match:
+        - uri:
+            prefix: /v2
+      rewrite:
+        uri: / # Rewrite /v2/... to /...
+      route:
+        - destination:
+            host: myapp
+            subset: v2
+
+    # ---------------------------------------------------------------------------
+    # Everything else goes to v1
+    # ---------------------------------------------------------------------------
+    - route:
+        - destination:
+            host: myapp
+            subset: v1
+
+# HOW TO TEST:
+# ------------
+# curl http://$INGRESS_HOST:$INGRESS_PORT/
+# # Output: Hello from VERSION 1!
+#
+# curl http://$INGRESS_HOST:$INGRESS_PORT/v2/
+# # Output: Hello from VERSION 2!
+
+---
+# ============================================================================
+# EXAMPLE 7: DestinationRule - Circuit Breaker
+# ============================================================================
+# Protect service from cascading failures
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: myapp-circuit-breaker
+spec:
+  host: myapp
+
+  trafficPolicy:
+    # ---------------------------------------------------------------------------
+    # connectionPool: Limit connections
+    # ---------------------------------------------------------------------------
+    connectionPool:
+      tcp:
+        maxConnections: 100 # Max TCP connections
+      http:
+        http1MaxPendingRequests: 100 # Max pending HTTP/1.1 requests
+        http2MaxRequests: 1000 # Max active HTTP/2 requests
+        maxRequestsPerConnection: 10 # Close connection after N requests
+        maxRetries: 3 # Max concurrent retries
+
+    # ---------------------------------------------------------------------------
+    # outlierDetection: Eject failing hosts
+    # ---------------------------------------------------------------------------
+    outlierDetection:
+      consecutive5xxErrors: 5 # Eject after 5 consecutive 5xx errors
+      interval: 30s # Check every 30 seconds
+      baseEjectionTime: 30s # Eject for at least 30 seconds
+      maxEjectionPercent: 50 # Don't eject more than 50% of hosts
+      minHealthPercent: 30 # Need at least 30% healthy hosts
+
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+    - name: v2
+      labels:
+        version: v2
+
+# HOW TO TEST:
+# ------------
+# # This protects against failing backends
+# # When a backend fails 5 times, it's ejected from load balancing
+
+---
+# ============================================================================
+# EXAMPLE 8: VirtualService - Retries and Timeouts
+# ============================================================================
+# Automatic retries and request timeouts
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-resilience
+spec:
+  hosts:
+    - myapp
+  gateways:
+    - myapp-gateway
+    - mesh
+  http:
+    - route:
+        - destination:
+            host: myapp
+            subset: v1
+
+      # ---------------------------------------------------------------------------
+      # timeout: Max request time
+      # ---------------------------------------------------------------------------
+      timeout: 10s
+
+      # ---------------------------------------------------------------------------
+      # retries: Automatic retry on failure
+      # ---------------------------------------------------------------------------
+      retries:
+        attempts: 3 # Retry up to 3 times
+        perTryTimeout: 2s # Timeout per attempt
+        retryOn: gateway-error,connect-failure,refused-stream,5xx
+
+# HOW TO TEST:
+# ------------
+# # Requests will be retried up to 3 times on failure
+# # Total timeout is 10 seconds
+
+---
+# ============================================================================
+# EXAMPLE 9: Fault Injection (Testing)
+# ============================================================================
+# Inject faults to test resilience
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-fault-injection
+spec:
+  hosts:
+    - myapp
+  http:
+    - route:
+        - destination:
+            host: myapp
+            subset: v1
+
+      # ---------------------------------------------------------------------------
+      # fault: Inject failures for testing
+      # ---------------------------------------------------------------------------
+      fault:
+        # Inject delays
+        delay:
+          percentage:
+            value: 10 # 10% of requests
+          fixedDelay: 5s # 5 second delay
+
+        # Inject errors
+        abort:
+          percentage:
+            value: 5 # 5% of requests
+          httpStatus: 500 # Return 500 error
+
+# HOW TO TEST:
+# ------------
+# # Some requests will be delayed or fail
+# for i in {1..20}; do
+#   time curl -s http://$INGRESS_HOST:$INGRESS_PORT
+# done
+# # ~10% will take 5+ seconds
+# # ~5% will return error
+
+---
+# ============================================================================
+# EXAMPLE 10: PeerAuthentication - Enable mTLS
+# ============================================================================
+# Mutual TLS between services
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: default
+spec:
+  # ---------------------------------------------------------------------------
+  # mtls mode:
+  # - PERMISSIVE: Accept both mTLS and plain text
+  # - STRICT: Only accept mTLS
+  # - DISABLE: No mTLS
+  # ---------------------------------------------------------------------------
+  mtls:
+    mode: STRICT
+
+# HOW TO TEST:
+# ------------
+# # Verify mTLS is working
+# istioctl x authz check deployment/myapp-v1
+#
+# # Traffic between pods is now encrypted!
+
+---
+# ============================================================================
+# EXAMPLE 11: AuthorizationPolicy - Access Control
+# ============================================================================
+# Control which services can access which
+
+# Deny all by default
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: default
+spec: {} # Empty spec = deny all
+
+---
+# Allow specific access
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend
+  namespace: default
+spec:
+  # ---------------------------------------------------------------------------
+  # selector: Which workloads this applies to
+  # ---------------------------------------------------------------------------
+  selector:
+    matchLabels:
+      app: myapp
+
+  # ---------------------------------------------------------------------------
+  # action: ALLOW, DENY, or CUSTOM
+  # ---------------------------------------------------------------------------
+  action: ALLOW
+
+  # ---------------------------------------------------------------------------
+  # rules: When to allow
+  # ---------------------------------------------------------------------------
+  rules:
+    - from:
+        - source:
+            # Allow from specific service accounts
+            principals:
+              - "cluster.local/ns/default/sa/frontend"
+            # Or from specific namespaces
+            namespaces:
+              - "frontend"
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/api/*", "/health"]
+
+# HOW TO TEST:
+# ------------
+# # Check authorization status
+# istioctl x authz check pod/myapp-v1-xxx
+
+---
+# ============================================================================
+# EXAMPLE 12: RequestAuthentication - JWT Validation
+# ============================================================================
+# Validate JWT tokens
+
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: myapp
+  jwtRules:
+    - issuer: "https://auth.example.com"
+      jwksUri: "https://auth.example.com/.well-known/jwks.json"
+      audiences:
+        - "myapp"
+# HOW TO TEST:
+# ------------
+# # Requests without valid JWT will be rejected
+# curl http://$INGRESS_HOST:$INGRESS_PORT
+# # 401 Unauthorized
+#
+# # With valid JWT
+# curl -H "Authorization: Bearer <token>" http://$INGRESS_HOST:$INGRESS_PORT
+# # Success
+
+# ============================================================================
+# ISTIO COMMANDS CHEAT SHEET
+# ============================================================================
+#
+# # Install Istio
+# istioctl install --set profile=demo -y
+#
+# # Enable injection
+# kubectl label namespace default istio-injection=enabled
+#
+# # Check injection
+# kubectl get namespace -L istio-injection
+#
+# # View proxy config
+# istioctl proxy-config routes deploy/myapp-v1
+#
+# # Analyze configuration
+# istioctl analyze
+#
+# # Open dashboards
+# istioctl dashboard kiali
+# istioctl dashboard grafana
+# istioctl dashboard jaeger
+#
+# # Check mTLS
+# istioctl x authz check deployment/myapp-v1
+#
+# # Debug proxy
+# istioctl proxy-status
+#
+# ============================================================================

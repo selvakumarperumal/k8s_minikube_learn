@@ -1,0 +1,460 @@
+# ============================================================================
+# SERVICES - Complete Examples
+# ============================================================================
+# This file contains all service types with detailed explanations
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply all examples:
+#    kubectl apply -f 01-services-examples.yaml
+#
+# 2. View services:
+#    kubectl get svc
+#
+# 3. Test each service (see individual sections below)
+#
+# 4. Cleanup:
+#    kubectl delete -f 01-services-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# DEPLOYMENT (Backend for all services)
+# ============================================================================
+# First, we need pods to serve traffic
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  # ---------------------------------------------------------------------------
+  # replicas: Number of pod copies
+  # ---------------------------------------------------------------------------
+  replicas: 3
+
+  # ---------------------------------------------------------------------------
+  # selector: How deployment finds its pods
+  # ---------------------------------------------------------------------------
+  selector:
+    matchLabels:
+      app: web-app
+
+  template:
+    metadata:
+      labels:
+        app: web-app
+        tier: frontend
+    spec:
+      containers:
+        - name: nginx
+          image: nginxdemos/hello
+          # nginxdemos/hello shows pod name, IP, and other info
+          ports:
+            - containerPort: 80
+              name: http
+          # Always set resources for production!
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+# HOW TO TEST DEPLOYMENT:
+# -----------------------
+# kubectl get pods -l app=web-app
+# kubectl get pods -o wide  # See pod IPs
+
+---
+# ============================================================================
+# EXAMPLE 1: ClusterIP Service (Default)
+# ============================================================================
+# Internal-only access. Other pods can reach this, but external traffic cannot.
+#
+# USE CASE:
+# - Internal microservices (api, database, cache)
+# - Services that don't need external access
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-clusterip
+  labels:
+    app: web-app
+    type: clusterip
+spec:
+  # ---------------------------------------------------------------------------
+  # type: ClusterIP (this is the default, can be omitted)
+  # ---------------------------------------------------------------------------
+  type: ClusterIP
+
+  # ---------------------------------------------------------------------------
+  # selector: Which pods to send traffic to
+  # Must match pod labels!
+  # ---------------------------------------------------------------------------
+  selector:
+    app: web-app
+
+  # ---------------------------------------------------------------------------
+  # ports: Port mapping
+  # ---------------------------------------------------------------------------
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80 # Service port (what clients connect to)
+      targetPort: 80 # Pod port (where container listens)
+
+# HOW TO TEST ClusterIP:
+# ----------------------
+# # Get service details
+# kubectl get svc web-clusterip
+#
+# # Test from another pod (ClusterIP only accessible from inside cluster)
+# kubectl run curl --image=curlimages/curl --rm -it -- curl http://web-clusterip
+#
+# # You should see the nginx demo page with pod info
+
+---
+# ============================================================================
+# EXAMPLE 2: NodePort Service
+# ============================================================================
+# Exposes service on each node's IP at a static port (30000-32767)
+#
+# USE CASE:
+# - Development/testing
+# - Bare metal clusters without load balancer
+# - Direct node access needed
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-nodeport
+  labels:
+    app: web-app
+    type: nodeport
+spec:
+  # ---------------------------------------------------------------------------
+  # type: NodePort
+  # Creates: ClusterIP + NodePort
+  # ---------------------------------------------------------------------------
+  type: NodePort
+
+  selector:
+    app: web-app
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80 # ClusterIP port
+      targetPort: 80 # Pod port
+      nodePort:
+        30080 # Node port (30000-32767)
+        # If omitted, assigned automatically
+
+# HOW TO TEST NodePort:
+# ---------------------
+# # Get Minikube IP
+# minikube ip
+#
+# # Access via node IP and port
+# curl http://$(minikube ip):30080
+#
+# # Or use Minikube's built-in URL
+# minikube service web-nodeport --url
+#
+# # Open in browser
+# minikube service web-nodeport
+
+---
+# ============================================================================
+# EXAMPLE 3: LoadBalancer Service
+# ============================================================================
+# Gets external IP from cloud provider or Minikube tunnel
+#
+# USE CASE:
+# - Production external services
+# - Cloud deployments (AWS, GCP, Azure)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-loadbalancer
+  labels:
+    app: web-app
+    type: loadbalancer
+spec:
+  # ---------------------------------------------------------------------------
+  # type: LoadBalancer
+  # Creates: ClusterIP + NodePort + External LoadBalancer
+  # ---------------------------------------------------------------------------
+  type: LoadBalancer
+
+  selector:
+    app: web-app
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+
+  # ---------------------------------------------------------------------------
+  # externalTrafficPolicy: How to handle external traffic
+  # ---------------------------------------------------------------------------
+  # Cluster: May route to pods on other nodes (default)
+  # Local: Only route to pods on same node (preserves client IP)
+  externalTrafficPolicy: Cluster
+
+# HOW TO TEST LoadBalancer:
+# -------------------------
+# # Check service - EXTERNAL-IP will be <pending> initially
+# kubectl get svc web-loadbalancer
+#
+# # In Minikube, run tunnel in separate terminal:
+# minikube tunnel
+#
+# # Now check again - should have external IP
+# kubectl get svc web-loadbalancer
+#
+# # Access via external IP
+# curl http://<EXTERNAL-IP>
+
+---
+# ============================================================================
+# EXAMPLE 4: Headless Service
+# ============================================================================
+# No load balancing - DNS returns all pod IPs
+#
+# USE CASE:
+# - StatefulSets (need individual pod addresses)
+# - Client-side load balancing
+# - Service discovery without proxy
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-headless
+  labels:
+    app: web-app
+    type: headless
+spec:
+  # ---------------------------------------------------------------------------
+  # clusterIP: None
+  # This makes it HEADLESS - no single ClusterIP
+  # ---------------------------------------------------------------------------
+  clusterIP: None
+
+  selector:
+    app: web-app
+
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+
+# HOW TO TEST Headless:
+# ---------------------
+# # DNS lookup returns ALL pod IPs (not single service IP)
+# kubectl run dnstest --image=busybox --rm -it -- nslookup web-headless
+#
+# # You should see multiple IP addresses (one per pod)
+# # Server:    10.96.0.10
+# # Address 1: 10.96.0.10
+# #
+# # Name:      web-headless
+# # Address 1: 10.0.1.10
+# # Address 2: 10.0.1.11
+# # Address 3: 10.0.1.12
+
+---
+# ============================================================================
+# EXAMPLE 5: ExternalName Service
+# ============================================================================
+# Maps to external DNS name (no proxying)
+#
+# USE CASE:
+# - Access external services with consistent naming
+# - Migration from external to internal services
+# - Cross-cluster service access
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-api
+  labels:
+    type: externalname
+spec:
+  # ---------------------------------------------------------------------------
+  # type: ExternalName
+  # No selector, no ports - just DNS CNAME
+  # ---------------------------------------------------------------------------
+  type: ExternalName
+
+  # ---------------------------------------------------------------------------
+  # externalName: The external DNS to map to
+  # ---------------------------------------------------------------------------
+  externalName: api.external-service.com
+
+# HOW TO TEST ExternalName:
+# -------------------------
+# # DNS lookup should return CNAME
+# kubectl run dnstest --image=busybox --rm -it -- nslookup external-api
+#
+# # From pods, use "external-api" and it resolves to api.external-service.com
+
+---
+# ============================================================================
+# EXAMPLE 6: Multi-Port Service
+# ============================================================================
+# Single service exposing multiple ports
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-multiport
+  labels:
+    app: web-app
+    type: multiport
+spec:
+  type: ClusterIP
+
+  selector:
+    app: web-app
+
+  ports:
+    # Port 1: HTTP
+    - name: http # Name is REQUIRED for multi-port services
+      protocol: TCP
+      port: 80
+      targetPort: 80
+
+    # Port 2: HTTPS (if container supports it)
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443
+
+    # Port 3: Metrics
+    - name: metrics
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+
+# HOW TO TEST Multi-Port:
+# -----------------------
+# kubectl get svc web-multiport
+# # Shows: 80/TCP,443/TCP,9090/TCP
+#
+# kubectl run curl --image=curlimages/curl --rm -it -- curl http://web-multiport:80
+
+---
+# ============================================================================
+# EXAMPLE 7: Service with Session Affinity
+# ============================================================================
+# Same client always goes to same pod
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-sticky
+  labels:
+    app: web-app
+    type: sticky
+spec:
+  type: ClusterIP
+
+  selector:
+    app: web-app
+
+  ports:
+    - port: 80
+      targetPort: 80
+
+  # ---------------------------------------------------------------------------
+  # sessionAffinity: ClientIP
+  # Same client IP always routed to same pod
+  # ---------------------------------------------------------------------------
+  sessionAffinity: ClientIP
+
+  # ---------------------------------------------------------------------------
+  # sessionAffinityConfig: Configure timeout
+  # ---------------------------------------------------------------------------
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800 # 3 hours (default)
+
+# HOW TO TEST Session Affinity:
+# -----------------------------
+# # Make multiple requests - should always show same pod
+# kubectl run curl --image=curlimages/curl --rm -it -- sh -c '
+#   for i in 1 2 3 4 5; do
+#     curl -s http://web-sticky | grep "Server name"
+#     sleep 1
+#   done
+# '
+# # All requests should show same "Server name" (same pod)
+
+---
+# ============================================================================
+# EXAMPLE 8: Service with External IPs
+# ============================================================================
+# Route traffic from specific IPs to this service
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-externalip
+  labels:
+    app: web-app
+    type: externalip
+spec:
+  type: ClusterIP
+
+  selector:
+    app: web-app
+
+  ports:
+    - port: 80
+      targetPort: 80
+
+  # ---------------------------------------------------------------------------
+  # externalIPs: External IPs that route to this service
+  # Traffic to these IPs on port 80 goes to this service
+  # ---------------------------------------------------------------------------
+  # NOTE: These IPs must be routable to your cluster nodes
+  # externalIPs:
+  #   - 192.168.1.100
+  #   - 192.168.1.101
+# HOW TO USE External IPs:
+# ------------------------
+# 1. Uncomment externalIPs above with your actual IPs
+# 2. Ensure those IPs route to your cluster nodes
+# 3. Access: curl http://192.168.1.100
+
+# ============================================================================
+# QUICK REFERENCE
+# ============================================================================
+#
+# Service Type Cheat Sheet:
+# -------------------------
+# ClusterIP:     kubectl get svc <name>
+#                → Internal only, use from other pods
+#
+# NodePort:      curl http://$(minikube ip):<nodePort>
+#                → Access from outside via node IP
+#
+# LoadBalancer:  minikube tunnel (then use EXTERNAL-IP)
+#                → Cloud-style external access
+#
+# Headless:      nslookup <service-name>
+#                → Returns all pod IPs
+#
+# ExternalName:  nslookup <service-name>
+#                → Returns CNAME to external DNS
+#
+# ============================================================================

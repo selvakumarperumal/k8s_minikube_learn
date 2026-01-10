@@ -1,0 +1,685 @@
+# ============================================================================
+# INGRESS - Complete Examples
+# ============================================================================
+# This file contains various Ingress configurations with explanations
+#
+# PREREQUISITES:
+# --------------
+# 1. Enable Ingress controller:
+#    minikube addons enable ingress
+#
+# 2. Wait for controller:
+#    kubectl wait --namespace ingress-nginx \
+#      --for=condition=ready pod \
+#      --selector=app.kubernetes.io/component=controller \
+#      --timeout=120s
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply backend services first (required by Ingress):
+#    kubectl apply -f 01-services-examples.yaml
+#
+# 2. Apply ingress examples:
+#    kubectl apply -f 02-ingress-examples.yaml
+#
+# 3. Add hosts to /etc/hosts:
+#    echo "$(minikube ip) demo.local api.local web.local admin.local secure.local" | sudo tee -a /etc/hosts
+#
+# 4. Test:
+#    curl http://demo.local
+#
+# 5. Cleanup:
+#    kubectl delete -f 02-ingress-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# BACKEND SERVICES (Required for Ingress to work)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-app
+  template:
+    metadata:
+      labels:
+        app: api-app
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from API service!"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+spec:
+  selector:
+    app: api-app
+  ports:
+    - port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-frontend
+  template:
+    metadata:
+      labels:
+        app: web-frontend
+    spec:
+      containers:
+        - name: web
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from Web Frontend!"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+spec:
+  selector:
+    app: web-frontend
+  ports:
+    - port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-app
+  template:
+    metadata:
+      labels:
+        app: admin-app
+    spec:
+      containers:
+        - name: admin
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from Admin Panel!"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-service
+spec:
+  selector:
+    app: admin-app
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# EXAMPLE 1: Simple Ingress (Single Host)
+# ============================================================================
+# Routes all traffic from one hostname to one service
+#
+# USE CASE:
+# - Simple single-app deployment
+# - Development environments
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: simple-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # Annotations are controller-specific settings
+    # These are for NGINX Ingress Controller
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  # ---------------------------------------------------------------------------
+  # ingressClassName: Which controller handles this Ingress
+  # ---------------------------------------------------------------------------
+  ingressClassName: nginx
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Host-based routing
+    # ---------------------------------------------------------------------------
+    - host: demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# # Add host to /etc/hosts
+# echo "$(minikube ip) demo.local" | sudo tee -a /etc/hosts
+#
+# # Test
+# curl http://demo.local
+# # Output: Hello from Web Frontend!
+
+---
+# ============================================================================
+# EXAMPLE 2: Path-Based Routing
+# ============================================================================
+# Different paths go to different services
+#
+# USE CASE:
+# - Microservices with different endpoints
+# - API versioning (/v1, /v2)
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: path-based-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # rewrite-target: Rewrite URL before forwarding
+    # /$1 captures the path after the match
+    # /api/users -> /users
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: api.local
+      http:
+        paths:
+          # ---------------------------------------------------------------------------
+          # Path: /api/* routes to api-service
+          # ---------------------------------------------------------------------------
+          - path: /api/(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 80
+
+          # ---------------------------------------------------------------------------
+          # Path: /web/* routes to web-service
+          # ---------------------------------------------------------------------------
+          - path: /web/(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+          # ---------------------------------------------------------------------------
+          # Path: /admin/* routes to admin-service
+          # ---------------------------------------------------------------------------
+          - path: /admin/(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-service
+                port:
+                  number: 80
+
+          # ---------------------------------------------------------------------------
+          # Default path: / routes to web-service
+          # ---------------------------------------------------------------------------
+          - path: /(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# echo "$(minikube ip) api.local" | sudo tee -a /etc/hosts
+#
+# curl http://api.local/api/users
+# # Output: Hello from API service!
+#
+# curl http://api.local/web/home
+# # Output: Hello from Web Frontend!
+#
+# curl http://api.local/admin/dashboard
+# # Output: Hello from Admin Panel!
+#
+# curl http://api.local/
+# # Output: Hello from Web Frontend!
+
+---
+# ============================================================================
+# EXAMPLE 3: Multi-Host (Virtual Hosting)
+# ============================================================================
+# Different hostnames go to different services
+#
+# USE CASE:
+# - Multiple apps on same cluster
+# - Subdomain routing
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multi-host-ingress
+spec:
+  ingressClassName: nginx
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Host 1: api.local -> api-service
+    # ---------------------------------------------------------------------------
+    - host: api.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 80
+
+    # ---------------------------------------------------------------------------
+    # Host 2: web.local -> web-service
+    # ---------------------------------------------------------------------------
+    - host: web.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+    # ---------------------------------------------------------------------------
+    # Host 3: admin.local -> admin-service
+    # ---------------------------------------------------------------------------
+    - host: admin.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# echo "$(minikube ip) api.local web.local admin.local" | sudo tee -a /etc/hosts
+#
+# curl http://api.local
+# # Output: Hello from API service!
+#
+# curl http://web.local
+# # Output: Hello from Web Frontend!
+#
+# curl http://admin.local
+# # Output: Hello from Admin Panel!
+
+---
+# ============================================================================
+# EXAMPLE 4: Ingress with TLS (HTTPS)
+# ============================================================================
+# Secure access with SSL/TLS certificate
+#
+# PREREQUISITES:
+# --------------
+# Create TLS secret first:
+#
+# # Generate self-signed certificate
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#   -keyout tls.key -out tls.crt \
+#   -subj "/CN=secure.local"
+#
+# # Create Kubernetes secret
+# kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key
+#
+# USE CASE:
+# - Production HTTPS
+# - Secure admin panels
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tls-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # Force redirect HTTP to HTTPS
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+    # ---------------------------------------------------------------------------
+    # Optional: Use specific SSL protocols
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+spec:
+  ingressClassName: nginx
+
+  # ---------------------------------------------------------------------------
+  # TLS Configuration
+  # ---------------------------------------------------------------------------
+  tls:
+    - hosts:
+        - secure.local
+      secretName: tls-secret # K8s secret with tls.crt and tls.key
+
+  rules:
+    - host: secure.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# # First create TLS secret (see PREREQUISITES above)
+#
+# echo "$(minikube ip) secure.local" | sudo tee -a /etc/hosts
+#
+# # Test HTTPS (-k ignores self-signed cert warning)
+# curl -k https://secure.local
+# # Output: Hello from Web Frontend!
+#
+# # HTTP should redirect to HTTPS
+# curl -L -k http://secure.local
+# # Redirects to https://secure.local
+
+---
+# ============================================================================
+# EXAMPLE 5: Ingress with Rate Limiting
+# ============================================================================
+# Limit requests to prevent abuse
+#
+# USE CASE:
+# - API rate limiting
+# - DDoS protection
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rate-limited-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # Rate Limiting Annotations
+    # ---------------------------------------------------------------------------
+    # Requests per second per IP
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+
+    # Connections per IP
+    nginx.ingress.kubernetes.io/limit-connections: "10"
+
+    # Burst size (allow temporary spikes)
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+
+    # Custom error when rate limited
+    nginx.ingress.kubernetes.io/server-snippet: |
+      error_page 503 @rate_limit_error;
+      location @rate_limit_error {
+        return 429 'Too Many Requests';
+      }
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: api.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# # Make many rapid requests
+# for i in {1..20}; do curl -s http://api.local/api; done
+#
+# # After 5 requests, you should see rate limiting kick in
+
+---
+# ============================================================================
+# EXAMPLE 6: Ingress with Custom Headers
+# ============================================================================
+# Add or modify HTTP headers
+#
+# USE CASE:
+# - CORS headers
+# - Security headers
+# - Custom app headers
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: custom-headers-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # Add headers to response
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Custom-Header "Hello from Ingress";
+      add_header X-Frame-Options "SAMEORIGIN";
+      add_header X-Content-Type-Options "nosniff";
+      add_header X-XSS-Protection "1; mode=block";
+
+    # ---------------------------------------------------------------------------
+    # CORS settings
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: api.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# # Check response headers
+# curl -I http://api.local
+#
+# # You should see:
+# # X-Custom-Header: Hello from Ingress
+# # X-Frame-Options: SAMEORIGIN
+# # X-Content-Type-Options: nosniff
+
+---
+# ============================================================================
+# EXAMPLE 7: Ingress with Basic Auth
+# ============================================================================
+# Password protect your service
+#
+# PREREQUISITES:
+# --------------
+# # Create htpasswd file
+# htpasswd -c auth admin
+# # Enter password when prompted
+#
+# # Create secret
+# kubectl create secret generic basic-auth --from-file=auth
+#
+# USE CASE:
+# - Protect staging environments
+# - Simple authentication
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: basic-auth-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # Basic Authentication
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: admin.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-service
+                port:
+                  number: 80
+
+# HOW TO TEST:
+# ------------
+# # First create the secret (see PREREQUISITES above)
+#
+# # Without auth - should get 401
+# curl http://admin.local
+# # 401 Authorization Required
+#
+# # With auth
+# curl -u admin:yourpassword http://admin.local
+# # Output: Hello from Admin Panel!
+
+---
+# ============================================================================
+# EXAMPLE 8: Ingress with Timeout Settings
+# ============================================================================
+# Configure timeouts for slow backends
+#
+# USE CASE:
+# - Long-running requests
+# - File uploads
+# - WebSocket connections
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: timeout-ingress
+  annotations:
+    # ---------------------------------------------------------------------------
+    # Timeout Settings
+    # ---------------------------------------------------------------------------
+    # Time to wait for backend to respond
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+
+    # Time to wait to connect to backend
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+
+    # Time to wait for client to send request
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+
+    # ---------------------------------------------------------------------------
+    # Body Size (for uploads)
+    # ---------------------------------------------------------------------------
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: api.local
+      http:
+        paths:
+          - path: /upload
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 80
+# HOW TO TEST:
+# ------------
+# # Check that large uploads work
+# dd if=/dev/zero of=testfile bs=1M count=10
+# curl -X POST -F "file=@testfile" http://api.local/upload
+
+# ============================================================================
+# QUICK REFERENCE - NGINX INGRESS ANNOTATIONS
+# ============================================================================
+#
+# SSL/TLS:
+#   nginx.ingress.kubernetes.io/ssl-redirect: "true"
+#   nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+#
+# Rewrites:
+#   nginx.ingress.kubernetes.io/rewrite-target: /$1
+#
+# Rate Limiting:
+#   nginx.ingress.kubernetes.io/limit-rps: "10"
+#   nginx.ingress.kubernetes.io/limit-connections: "5"
+#
+# Timeouts:
+#   nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+#   nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+#
+# Body Size:
+#   nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+#
+# CORS:
+#   nginx.ingress.kubernetes.io/enable-cors: "true"
+#
+# Basic Auth:
+#   nginx.ingress.kubernetes.io/auth-type: basic
+#   nginx.ingress.kubernetes.io/auth-secret: my-secret
+#
+# ============================================================================

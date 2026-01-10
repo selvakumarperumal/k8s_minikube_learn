@@ -1,0 +1,773 @@
+# ============================================================================
+# NETWORK POLICIES - Complete Examples
+# ============================================================================
+# This file contains various Network Policy configurations
+#
+# PREREQUISITES:
+# --------------
+# Network Policies require a CNI that supports them!
+#
+# 1. Delete existing Minikube (if using kindnet):
+#    minikube delete
+#
+# 2. Start with Calico CNI:
+#    minikube start --cni=calico
+#
+# 3. Wait for Calico:
+#    kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=120s
+#
+# HOW TO RUN:
+# -----------
+# 1. Create namespace and pods:
+#    kubectl apply -f 03-network-policies-setup.yaml
+#
+# 2. Apply network policies:
+#    kubectl apply -f 03-network-policies-examples.yaml
+#
+# 3. Test connectivity (see individual examples)
+#
+# 4. Cleanup:
+#    kubectl delete namespace netpol-demo
+#
+# ============================================================================
+
+---
+# ============================================================================
+# SETUP: Create Namespace and Test Pods
+# ============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netpol-demo
+  labels:
+    name: netpol-demo
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external
+  labels:
+    name: external
+
+---
+# Frontend Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frontend
+  namespace: netpol-demo
+  labels:
+    app: frontend
+    tier: frontend
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+---
+# Backend Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend
+  namespace: netpol-demo
+  labels:
+    app: backend
+    tier: backend
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+---
+# Database Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: database
+  namespace: netpol-demo
+  labels:
+    app: database
+    tier: database
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+---
+# Monitoring Pod (in monitoring namespace)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  containers:
+    - name: busybox
+      image: busybox
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+---
+# Services for testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: netpol-demo
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: netpol-demo
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: netpol-demo
+spec:
+  selector:
+    app: database
+  ports:
+    - port: 80
+
+# HOW TO VERIFY SETUP:
+# --------------------
+# kubectl get pods -n netpol-demo
+# kubectl get pods -n monitoring
+# kubectl get svc -n netpol-demo
+#
+# # Test connectivity (before policies - should all work)
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://backend
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://database
+# kubectl exec -n netpol-demo backend -- curl -s --max-time 3 http://database
+
+---
+# ============================================================================
+# EXAMPLE 1: Deny All Ingress (Zero Trust Baseline)
+# ============================================================================
+# Block ALL incoming traffic to pods in namespace
+# This is the foundation of Zero Trust networking
+#
+# USE CASE:
+# - Security baseline
+# - Start with deny-all, then add specific allows
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: netpol-demo
+spec:
+  # ---------------------------------------------------------------------------
+  # podSelector: {} means ALL pods in this namespace
+  # ---------------------------------------------------------------------------
+  podSelector: {}
+
+  # ---------------------------------------------------------------------------
+  # policyTypes: What traffic this policy controls
+  # ---------------------------------------------------------------------------
+  policyTypes:
+    - Ingress # Control incoming traffic
+
+  # ---------------------------------------------------------------------------
+  # ingress: [] (empty) means DENY ALL incoming traffic
+  # ---------------------------------------------------------------------------
+  ingress: []
+
+# HOW TO TEST:
+# ------------
+# # Apply the policy
+# kubectl apply -f <this-file>
+#
+# # Get backend IP
+# BACKEND_IP=$(kubectl get pod backend -n netpol-demo -o jsonpath='{.status.podIP}')
+#
+# # Test from frontend (should FAIL/timeout)
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://$BACKEND_IP
+# # Output: curl: (28) Connection timed out
+#
+# # All ingress is now blocked!
+
+---
+# ============================================================================
+# EXAMPLE 2: Deny All Egress
+# ============================================================================
+# Block ALL outgoing traffic from pods in namespace
+#
+# USE CASE:
+# - Prevent data exfiltration
+# - Strict security requirements
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: netpol-demo
+spec:
+  podSelector: {}
+
+  policyTypes:
+    - Egress # Control outgoing traffic
+
+  # ---------------------------------------------------------------------------
+  # egress: [] (empty) means DENY ALL outgoing traffic
+  # ---------------------------------------------------------------------------
+  egress: []
+
+# HOW TO TEST:
+# ------------
+# # Apply the policy
+# kubectl apply -f <this-file>
+#
+# # Test from frontend (should FAIL)
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://google.com
+# # Output: curl: (6) Could not resolve host (DNS blocked too!)
+
+---
+# ============================================================================
+# EXAMPLE 3: Allow Frontend to Backend Only
+# ============================================================================
+# Only frontend pods can access backend pods
+#
+# USE CASE:
+# - Microservices communication control
+# - Principle of least privilege
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: netpol-demo
+spec:
+  # ---------------------------------------------------------------------------
+  # Apply to: Backend pods only
+  # ---------------------------------------------------------------------------
+  podSelector:
+    matchLabels:
+      app: backend
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    # ---------------------------------------------------------------------------
+    # Allow from: Frontend pods only
+    # ---------------------------------------------------------------------------
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      # ---------------------------------------------------------------------------
+      # On ports: 80 only
+      # ---------------------------------------------------------------------------
+      ports:
+        - protocol: TCP
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# # First, remove deny-all if applied
+# kubectl delete networkpolicy deny-all-ingress -n netpol-demo
+#
+# # Apply this policy
+# kubectl apply -f <this-file>
+#
+# # Get backend IP
+# BACKEND_IP=$(kubectl get pod backend -n netpol-demo -o jsonpath='{.status.podIP}')
+#
+# # Test from frontend (should WORK)
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://$BACKEND_IP
+# # Output: nginx welcome page ✓
+#
+# # Test from database (should FAIL)
+# kubectl exec -n netpol-demo database -- curl -s --max-time 3 http://$BACKEND_IP
+# # Output: curl: (28) Connection timed out ✗
+
+---
+# ============================================================================
+# EXAMPLE 4: Allow from Another Namespace
+# ============================================================================
+# Allow monitoring namespace to access all pods (for Prometheus scraping)
+#
+# IMPORTANT: Namespace must have a label!
+#   kubectl label namespace monitoring name=monitoring
+#
+# USE CASE:
+# - Monitoring systems
+# - Cross-namespace access
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-monitoring
+  namespace: netpol-demo
+spec:
+  # ---------------------------------------------------------------------------
+  # Apply to: All pods
+  # ---------------------------------------------------------------------------
+  podSelector: {}
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    # ---------------------------------------------------------------------------
+    # Allow from: Monitoring namespace
+    # ---------------------------------------------------------------------------
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring # Namespace must have this label!
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 9090 # Metrics port
+
+# HOW TO TEST:
+# ------------
+# # Ensure namespace has label
+# kubectl label namespace monitoring name=monitoring --overwrite
+#
+# # Apply policy
+# kubectl apply -f <this-file>
+#
+# # Get backend IP
+# BACKEND_IP=$(kubectl get pod backend -n netpol-demo -o jsonpath='{.status.podIP}')
+#
+# # Test from monitoring namespace (should WORK)
+# kubectl exec -n monitoring prometheus -- wget -qO- --timeout=3 http://$BACKEND_IP
+# # Output: nginx welcome page ✓
+
+---
+# ============================================================================
+# EXAMPLE 5: Allow Database Access from Specific Pods
+# ============================================================================
+# Only backend can access database
+#
+# USE CASE:
+# - Database protection
+# - API-only database access
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: database-access-control
+  namespace: netpol-demo
+spec:
+  # ---------------------------------------------------------------------------
+  # Apply to: Database pods only
+  # ---------------------------------------------------------------------------
+  podSelector:
+    matchLabels:
+      app: database
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    # ---------------------------------------------------------------------------
+    # Allow from: Backend pods only on port 80
+    # ---------------------------------------------------------------------------
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 80 # In real world: 5432 for PostgreSQL
+
+# HOW TO TEST:
+# ------------
+# # Apply policy
+# kubectl apply -f <this-file>
+#
+# # Get database IP
+# DB_IP=$(kubectl get pod database -n netpol-demo -o jsonpath='{.status.podIP}')
+#
+# # Test from backend (should WORK)
+# kubectl exec -n netpol-demo backend -- curl -s --max-time 3 http://$DB_IP
+# # Output: nginx welcome page ✓
+#
+# # Test from frontend (should FAIL)
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://$DB_IP
+# # Output: curl: (28) Connection timed out ✗
+
+---
+# ============================================================================
+# EXAMPLE 6: Allow Egress to DNS and Specific Services
+# ============================================================================
+# Pods can only reach DNS and specific services
+#
+# USE CASE:
+# - Restrict outbound traffic
+# - Prevent data exfiltration
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controlled-egress
+  namespace: netpol-demo
+spec:
+  # ---------------------------------------------------------------------------
+  # Apply to: Backend pods
+  # ---------------------------------------------------------------------------
+  podSelector:
+    matchLabels:
+      app: backend
+
+  policyTypes:
+    - Egress
+
+  egress:
+    # ---------------------------------------------------------------------------
+    # Rule 1: Allow DNS (REQUIRED for service discovery!)
+    # ---------------------------------------------------------------------------
+    - to:
+        - namespaceSelector: {} # Any namespace
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns # CoreDNS pods
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # ---------------------------------------------------------------------------
+    # Rule 2: Allow database access
+    # ---------------------------------------------------------------------------
+    - to:
+        - podSelector:
+            matchLabels:
+              app: database
+      ports:
+        - protocol: TCP
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# # Apply policy
+# kubectl apply -f <this-file>
+#
+# # Test DNS (should work)
+# kubectl exec -n netpol-demo backend -- nslookup database
+#
+# # Test database access (should work)
+# kubectl exec -n netpol-demo backend -- curl -s --max-time 3 http://database
+#
+# # Test external access (should FAIL)
+# kubectl exec -n netpol-demo backend -- curl -s --max-time 3 http://google.com
+
+---
+# ============================================================================
+# EXAMPLE 7: Allow from IP Block (CIDR)
+# ============================================================================
+# Allow traffic from specific IP ranges
+#
+# USE CASE:
+# - External client access
+# - VPN access
+# - Office IP ranges
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-ip-range
+  namespace: netpol-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    - from:
+        # ---------------------------------------------------------------------------
+        # Allow from specific IP ranges
+        # ---------------------------------------------------------------------------
+        - ipBlock:
+            cidr: 10.0.0.0/8 # Allow from 10.x.x.x
+            except:
+              - 10.0.1.0/24 # But NOT 10.0.1.x
+
+        - ipBlock:
+            cidr: 192.168.0.0/16 # Allow from 192.168.x.x
+
+      ports:
+        - protocol: TCP
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# # Check your pod IPs
+# kubectl get pods -n netpol-demo -o wide
+#
+# # If source IP is in allowed CIDR, access works
+# # This is useful for allowing external IPs
+
+---
+# ============================================================================
+# EXAMPLE 8: Combined Ingress + Egress Policy
+# ============================================================================
+# Complete policy controlling both directions
+#
+# USE CASE:
+# - Comprehensive security
+# - Production workloads
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-complete-policy
+  namespace: netpol-demo
+spec:
+  # ---------------------------------------------------------------------------
+  # Apply to: Backend pods
+  # ---------------------------------------------------------------------------
+  podSelector:
+    matchLabels:
+      app: backend
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # ---------------------------------------------------------------------------
+  # INGRESS RULES: What can reach backend
+  # ---------------------------------------------------------------------------
+  ingress:
+    # From frontend on port 80
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 80
+
+    # From monitoring namespace on port 9090
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+
+  # ---------------------------------------------------------------------------
+  # EGRESS RULES: What backend can reach
+  # ---------------------------------------------------------------------------
+  egress:
+    # DNS (required!)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+
+    # Database
+    - to:
+        - podSelector:
+            matchLabels:
+              app: database
+      ports:
+        - protocol: TCP
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# # Apply policy
+# kubectl apply -f <this-file>
+#
+# # Test ingress from frontend (should work)
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://backend
+#
+# # Test ingress from database (should fail)
+# kubectl exec -n netpol-demo database -- curl -s --max-time 3 http://backend
+#
+# # Test egress to database (should work)
+# kubectl exec -n netpol-demo backend -- curl -s --max-time 3 http://database
+#
+# # Test egress to frontend (should fail)
+# kubectl exec -n netpol-demo backend -- curl -s --max-time 3 http://frontend
+
+---
+# ============================================================================
+# EXAMPLE 9: Allow Specific Ports Only
+# ============================================================================
+# Microservice with multiple ports, different access rules per port
+#
+# USE CASE:
+# - API port vs admin port
+# - Metrics endpoint
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: multi-port-access
+  namespace: netpol-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+
+  policyTypes:
+    - Ingress
+
+  ingress:
+    # ---------------------------------------------------------------------------
+    # Port 80 (API): Allow from frontend
+    # ---------------------------------------------------------------------------
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Port 9090 (Metrics): Allow from monitoring namespace
+    # ---------------------------------------------------------------------------
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+
+    # ---------------------------------------------------------------------------
+    # Port 8080 (Admin): Allow from specific pods with admin label
+    # ---------------------------------------------------------------------------
+    - from:
+        - podSelector:
+            matchLabels:
+              role: admin
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# ============================================================================
+# EXAMPLE 10: Allow All Ingress/Egress (Explicit)
+# ============================================================================
+# Explicitly allow all traffic (opposite of deny-all)
+#
+# USE CASE:
+# - Development environments
+# - Override default deny policies
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all
+  namespace: netpol-demo
+spec:
+  podSelector: {} # All pods
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # ---------------------------------------------------------------------------
+  # Allow all ingress from everywhere
+  # ---------------------------------------------------------------------------
+  ingress:
+    - {} # Empty = allow all
+
+  # ---------------------------------------------------------------------------
+  # Allow all egress to everywhere
+  # ---------------------------------------------------------------------------
+  egress:
+    - {} # Empty = allow all
+
+# HOW TO TEST:
+# ------------
+# # Apply this to reset to "allow all" state
+# kubectl apply -f <this-file>
+#
+# # All communication should now work
+# kubectl exec -n netpol-demo frontend -- curl -s --max-time 3 http://backend
+
+# ============================================================================
+# COMMON PATTERNS SUMMARY
+# ============================================================================
+#
+# Zero Trust Baseline:
+#   podSelector: {}
+#   policyTypes: [Ingress]
+#   ingress: []                    # Empty = deny all
+#
+# Allow from specific pods:
+#   ingress:
+#     - from:
+#         - podSelector:
+#             matchLabels:
+#               app: frontend
+#
+# Allow from namespace:
+#   ingress:
+#     - from:
+#         - namespaceSelector:
+#             matchLabels:
+#               name: monitoring
+#
+# Allow DNS (for egress):
+#   egress:
+#     - to:
+#         - namespaceSelector: {}
+#           podSelector:
+#             matchLabels:
+#               k8s-app: kube-dns
+#       ports:
+#         - protocol: UDP
+#           port: 53
+#
+# ============================================================================

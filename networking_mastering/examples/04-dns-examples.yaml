@@ -1,0 +1,504 @@
+# ============================================================================
+# DNS & COREDNS - Complete Examples
+# ============================================================================
+# This file contains DNS configuration examples
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f 04-dns-examples.yaml
+#
+# 2. Test DNS (see individual examples)
+#
+# 3. Cleanup:
+#    kubectl delete -f 04-dns-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# EXAMPLE 1: Pod with Default DNS
+# ============================================================================
+# Standard pod uses cluster DNS automatically
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-default
+  labels:
+    purpose: dns-test
+spec:
+  containers:
+    - name: dnsutils
+      image: busybox:1.35
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+# HOW TO TEST:
+# ------------
+# # View DNS configuration
+# kubectl exec dns-default -- cat /etc/resolv.conf
+# # Output:
+# # nameserver 10.96.0.10
+# # search default.svc.cluster.local svc.cluster.local cluster.local
+# # options ndots:5
+#
+# # Test DNS resolution - Kubernetes service
+# kubectl exec dns-default -- nslookup kubernetes
+#
+# # Test DNS resolution - external
+# kubectl exec dns-default -- nslookup google.com
+
+---
+# ============================================================================
+# EXAMPLE 2: Pod with Custom DNS
+# ============================================================================
+# Override default DNS settings
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-custom
+  labels:
+    purpose: dns-test
+spec:
+  containers:
+    - name: dnsutils
+      image: busybox:1.35
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # dnsPolicy: None = Don't use cluster DNS
+  # We will provide our own settings
+  # ---------------------------------------------------------------------------
+  dnsPolicy: "None"
+
+  # ---------------------------------------------------------------------------
+  # dnsConfig: Custom DNS settings
+  # ---------------------------------------------------------------------------
+  dnsConfig:
+    # Custom nameservers
+    nameservers:
+      - 10.96.0.10 # Keep cluster DNS
+      - 8.8.8.8 # Add Google DNS
+      - 1.1.1.1 # Add Cloudflare DNS
+
+    # Custom search domains
+    searches:
+      - default.svc.cluster.local
+      - svc.cluster.local
+      - mycompany.internal # Add custom domain
+
+    # Custom options
+    options:
+      - name: ndots
+        value: "2" # Lower ndots for faster external lookups
+      - name: timeout
+        value: "3" # DNS timeout
+      - name: attempts
+        value: "2" # Retry attempts
+
+# HOW TO TEST:
+# ------------
+# # View custom DNS configuration
+# kubectl exec dns-custom -- cat /etc/resolv.conf
+# # Should show custom nameservers and options
+#
+# # Test cluster DNS still works
+# kubectl exec dns-custom -- nslookup kubernetes
+#
+# # Test external DNS
+# kubectl exec dns-custom -- nslookup google.com
+
+---
+# ============================================================================
+# EXAMPLE 3: Pod with ClusterFirst DNS Policy
+# ============================================================================
+# Default policy - use cluster DNS first, then forward externally
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-clusterfirst
+  labels:
+    purpose: dns-test
+spec:
+  containers:
+    - name: dnsutils
+      image: busybox:1.35
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # dnsPolicy: ClusterFirst (default for pods)
+  # - Cluster domains (.svc.cluster.local) → CoreDNS
+  # - External domains → Forward to upstream DNS
+  # ---------------------------------------------------------------------------
+  dnsPolicy: "ClusterFirst"
+
+# HOW TO TEST:
+# ------------
+# kubectl exec dns-clusterfirst -- cat /etc/resolv.conf
+# kubectl exec dns-clusterfirst -- nslookup kubernetes
+
+---
+# ============================================================================
+# EXAMPLE 4: Pod with ClusterFirstWithHostNet
+# ============================================================================
+# For pods using host network that still need cluster DNS
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-hostnet
+  labels:
+    purpose: dns-test
+spec:
+  # ---------------------------------------------------------------------------
+  # hostNetwork: true = Pod uses host's network namespace
+  # ---------------------------------------------------------------------------
+  hostNetwork: true
+
+  containers:
+    - name: dnsutils
+      image: busybox:1.35
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # dnsPolicy: ClusterFirstWithHostNet
+  # Required when using hostNetwork but still want cluster DNS
+  # Without this, pod would use node's /etc/resolv.conf
+  # ---------------------------------------------------------------------------
+  dnsPolicy: "ClusterFirstWithHostNet"
+
+# HOW TO TEST:
+# ------------
+# kubectl exec dns-hostnet -- cat /etc/resolv.conf
+# # Should still show cluster DNS (10.96.0.10)
+#
+# kubectl exec dns-hostnet -- nslookup kubernetes
+
+---
+# ============================================================================
+# EXAMPLE 5: Pod with Default (Node) DNS Policy
+# ============================================================================
+# Use node's DNS configuration (rarely used for pods)
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-node
+  labels:
+    purpose: dns-test
+spec:
+  containers:
+    - name: dnsutils
+      image: busybox:1.35
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # dnsPolicy: Default = Use node's DNS
+  # Pod inherits /etc/resolv.conf from the node
+  # Cluster services will NOT be resolvable by name!
+  # ---------------------------------------------------------------------------
+  dnsPolicy: "Default"
+
+# HOW TO TEST:
+# ------------
+# kubectl exec dns-node -- cat /etc/resolv.conf
+# # Shows node's DNS settings, NOT cluster DNS
+#
+# # Cluster DNS will NOT work
+# kubectl exec dns-node -- nslookup kubernetes
+# # May fail to resolve
+
+---
+# ============================================================================
+# EXAMPLE 6: Deployment with DNS Configuration
+# ============================================================================
+# Apply DNS settings to all pods in a deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-with-dns-config
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dns-app
+  template:
+    metadata:
+      labels:
+        app: dns-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+
+      # ---------------------------------------------------------------------------
+      # All pods in this deployment get these DNS settings
+      # ---------------------------------------------------------------------------
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: single-request-reopen
+
+# HOW TO TEST:
+# ------------
+# kubectl get pods -l app=dns-app
+# kubectl exec deploy/app-with-dns-config -- cat /etc/resolv.conf
+
+---
+# ============================================================================
+# EXAMPLE 7: Service for DNS Testing
+# ============================================================================
+# Create services to test DNS resolution
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: dns-app
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  namespace: kube-system
+spec:
+  selector:
+    k8s-app: kube-dns
+  ports:
+    - port: 53
+      targetPort: 53
+
+# HOW TO TEST DNS NAME FORMATS:
+# -----------------------------
+# # Short name (same namespace)
+# kubectl exec dns-default -- nslookup my-service
+# # Resolves: my-service.default.svc.cluster.local
+#
+# # With namespace
+# kubectl exec dns-default -- nslookup my-service.default
+# # Resolves: my-service.default.svc.cluster.local
+#
+# # Full FQDN
+# kubectl exec dns-default -- nslookup my-service.default.svc.cluster.local
+#
+# # Cross-namespace (from default to kube-system)
+# kubectl exec dns-default -- nslookup kube-dns.kube-system
+# # Resolves: kube-dns.kube-system.svc.cluster.local
+
+---
+# ============================================================================
+# EXAMPLE 8: Headless Service DNS
+# ============================================================================
+# DNS returns all pod IPs instead of service ClusterIP
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headless-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: headless-app
+  template:
+    metadata:
+      labels:
+        app: headless-app
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: headless-svc
+spec:
+  # ---------------------------------------------------------------------------
+  # clusterIP: None makes this HEADLESS
+  # DNS returns individual pod IPs, not a single service IP
+  # ---------------------------------------------------------------------------
+  clusterIP: None
+  selector:
+    app: headless-app
+  ports:
+    - port: 80
+
+# HOW TO TEST HEADLESS DNS:
+# -------------------------
+# # Wait for pods
+# kubectl wait --for=condition=ready pod -l app=headless-app --timeout=60s
+#
+# # DNS lookup - returns ALL pod IPs
+# kubectl exec dns-default -- nslookup headless-svc
+# # Output:
+# # Name:      headless-svc
+# # Address 1: 10.0.1.10
+# # Address 2: 10.0.1.11
+# # Address 3: 10.0.1.12
+#
+# # Compare with normal service (returns single IP)
+# kubectl exec dns-default -- nslookup my-service
+# # Output:
+# # Name:      my-service
+# # Address 1: 10.96.100.50 (ClusterIP)
+
+---
+# ============================================================================
+# EXAMPLE 9: StatefulSet DNS (Individual Pod DNS)
+# ============================================================================
+# StatefulSet pods get individual DNS names
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  serviceName: "web-headless" # Required for StatefulSet
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-stateful
+  template:
+    metadata:
+      labels:
+        app: web-stateful
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+# Headless service for StatefulSet (required)
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-headless
+spec:
+  clusterIP: None
+  selector:
+    app: web-stateful
+  ports:
+    - port: 80
+
+# HOW TO TEST STATEFULSET DNS:
+# ----------------------------
+# # Wait for pods
+# kubectl wait --for=condition=ready pod -l app=web-stateful --timeout=120s
+#
+# # StatefulSet pods have individual DNS names!
+# # Format: <pod-name>.<service-name>.<namespace>.svc.cluster.local
+#
+# kubectl exec dns-default -- nslookup web-0.web-headless
+# kubectl exec dns-default -- nslookup web-1.web-headless
+# kubectl exec dns-default -- nslookup web-2.web-headless
+#
+# # Each resolves to that specific pod's IP!
+
+---
+# ============================================================================
+# EXAMPLE 10: ExternalName DNS
+# ============================================================================
+# Service that creates a DNS CNAME to external service
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-db
+spec:
+  type: ExternalName
+  # ---------------------------------------------------------------------------
+  # Maps "external-db" to external DNS name
+  # No proxying, just DNS alias
+  # ---------------------------------------------------------------------------
+  externalName: database.example.com
+# HOW TO TEST EXTERNALNAME:
+# -------------------------
+# kubectl exec dns-default -- nslookup external-db
+# # Returns CNAME to database.example.com
+
+# ============================================================================
+# DNS DEBUGGING COMMANDS
+# ============================================================================
+#
+# # Check CoreDNS pods
+# kubectl get pods -n kube-system -l k8s-app=kube-dns
+#
+# # Check CoreDNS logs
+# kubectl logs -n kube-system -l k8s-app=kube-dns
+#
+# # Check CoreDNS config
+# kubectl get configmap coredns -n kube-system -o yaml
+#
+# # Test with dig (more detailed)
+# kubectl run dig --image=tutum/dnsutils --rm -it -- dig kubernetes.default.svc.cluster.local
+#
+# # Check pod's resolv.conf
+# kubectl exec <pod-name> -- cat /etc/resolv.conf
+#
+# ============================================================================
+# DNS NAME FORMATS CHEAT SHEET
+# ============================================================================
+#
+# SERVICE:
+#   <service>                           → Same namespace
+#   <service>.<namespace>               → Specific namespace
+#   <service>.<namespace>.svc           → Full with svc
+#   <service>.<namespace>.svc.cluster.local  → Full FQDN
+#
+# POD (via headless/statefulset):
+#   <pod-name>.<service>                → Specific pod
+#   <pod-name>.<service>.<ns>.svc.cluster.local → Full FQDN
+#
+# POD IP (direct):
+#   <pod-ip-dashed>.<ns>.pod.cluster.local
+#   Example: 10-0-1-50.default.pod.cluster.local
+#
+# ============================================================================

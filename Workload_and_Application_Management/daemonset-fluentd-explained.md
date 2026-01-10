@@ -1,8 +1,8 @@
-# Fluentd DaemonSet Explained
+# Log Collector DaemonSet Explained
 
-## What is Fluentd?
+## What is a Log Collector DaemonSet?
 
-**Fluentd** is a popular open-source log collector that unifies logging infrastructure. As a DaemonSet, it runs on every node to collect container logs.
+A **Log Collector DaemonSet** runs on every node in your cluster to collect container logs and ship them to a centralized location.
 
 ```mermaid
 flowchart TB
@@ -10,306 +10,265 @@ flowchart TB
         subgraph Node1["Node 1"]
             C1A[Container A]
             C1B[Container B]
-            F1[("🔵 Fluentd")]
+            L1[("🔵 Log Collector")]
         end
         
         subgraph Node2["Node 2"]
             C2A[Container C]
             C2B[Container D]
-            F2[("🔵 Fluentd")]
+            L2[("🔵 Log Collector")]
         end
         
         subgraph Node3["Node 3"]
             C3A[Container E]
-            F3[("🔵 Fluentd")]
+            L3[("🔵 Log Collector")]
         end
     end
     
-    C1A -->|logs| F1
-    C1B -->|logs| F1
-    C2A -->|logs| F2
-    C2B -->|logs| F2
-    C3A -->|logs| F3
+    C1A -->|logs| L1
+    C1B -->|logs| L1
+    C2A -->|logs| L2
+    C2B -->|logs| L2
+    C3A -->|logs| L3
     
-    F1 --> Output["📤 Log Storage<br/>(Elasticsearch, S3, etc.)"]
-    F2 --> Output
-    F3 --> Output
+    L1 --> Output["📤 Centralized Logs<br/>(Elasticsearch, Loki, S3)"]
+    L2 --> Output
+    L3 --> Output
     
-    style F1 fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style F2 fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style F3 fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style L1 fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style L2 fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style L3 fill:#50fa7b,stroke:#8be9fd,color:#282a36
     style Output fill:#bd93f9,stroke:#ff79c6,color:#f8f8f2
 ```
 
 ---
 
-## How Fluentd Collects Logs
+## How Container Logging Works in Kubernetes
 
 ```mermaid
 flowchart LR
-    subgraph Node["Node"]
-        subgraph Containers["Containers"]
-            App1["App 1"]
-            App2["App 2"]
-        end
-        
-        subgraph HostPath["/var/log/containers/"]
-            Log1["app1_default_xxx.log"]
-            Log2["app2_default_xxx.log"]
-        end
-        
-        subgraph Fluentd["Fluentd Pod"]
-            Tail["📖 Tail Source"]
-            Parse["🔄 Parser"]
-            Filter["🏷️ Filter"]
-            Out["📤 Output"]
-        end
+    subgraph Container["Container"]
+        App["Application"]
     end
     
-    App1 -->|stdout/stderr| Log1
-    App2 -->|stdout/stderr| Log2
-    Log1 --> Tail
-    Log2 --> Tail
-    Tail --> Parse
-    Parse --> Filter
-    Filter --> Out
+    subgraph Kubelet["Kubelet"]
+        Redirect["Log Redirect"]
+    end
     
-    style Fluentd fill:#282a36,stroke:#bd93f9,color:#f8f8f2
-    style Tail fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style Parse fill:#ffb86c,stroke:#f1fa8c,color:#282a36
-    style Filter fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
-    style Out fill:#8be9fd,stroke:#50fa7b,color:#282a36
+    subgraph Node["Node Filesystem"]
+        LogFile["/var/log/containers/<br/>pod_namespace_container.log"]
+    end
+    
+    subgraph Collector["Log Collector Pod"]
+        Tail["Read Logs"]
+    end
+    
+    App -->|"stdout/stderr"| Redirect
+    Redirect -->|"writes"| LogFile
+    LogFile -->|"reads"| Tail
+    
+    style App fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style Redirect fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style LogFile fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
+    style Tail fill:#8be9fd,stroke:#50fa7b,color:#282a36
 ```
 
 ### Log Flow Steps
 
-| Step | Component | Description |
-|------|-----------|-------------|
-| 1 | Container | App writes to stdout/stderr |
-| 2 | Kubelet | Redirects to `/var/log/containers/*.log` |
-| 3 | Fluentd Source | Tails log files with `@type tail` |
-| 4 | Parser | Parses JSON log format |
-| 5 | Filter | Adds metadata (node, namespace, pod) |
-| 6 | Output | Sends to destination (stdout, ES, S3) |
+| Step | What Happens |
+|------|--------------|
+| 1 | Application writes to **stdout/stderr** |
+| 2 | Kubelet redirects output to log files |
+| 3 | Logs stored in `/var/log/containers/*.log` |
+| 4 | Log collector reads from this directory |
+| 5 | Logs shipped to centralized storage |
 
 ---
 
-## Architecture Components
-
-```mermaid
-flowchart TB
-    subgraph DaemonSetResources["Fluentd DaemonSet Resources"]
-        DS["DaemonSet<br/>fluentd"]
-        SA["ServiceAccount<br/>fluentd"]
-        CR["ClusterRole<br/>read pods/namespaces"]
-        CRB["ClusterRoleBinding"]
-        CM["ConfigMap<br/>fluentd-config"]
-    end
-    
-    DS --> SA
-    SA --> CRB
-    CRB --> CR
-    DS --> CM
-    
-    style DS fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style SA fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
-    style CR fill:#ffb86c,stroke:#f1fa8c,color:#282a36
-    style CRB fill:#ffb86c,stroke:#f1fa8c,color:#282a36
-    style CM fill:#8be9fd,stroke:#50fa7b,color:#282a36
-```
-
-| Resource | Purpose |
-|----------|---------|
-| **DaemonSet** | Ensures Fluentd runs on every node |
-| **ServiceAccount** | Identity for RBAC |
-| **ClusterRole** | Permissions to read pods/namespaces |
-| **ClusterRoleBinding** | Connects SA to ClusterRole |
-| **ConfigMap** | Fluentd configuration file |
-
----
-
-## Volume Mounts
-
-Fluentd needs access to host paths to read container logs:
+## Why Use a DaemonSet for Logging?
 
 ```mermaid
 flowchart LR
-    subgraph HostPaths["Host Node Paths"]
-        VL["/var/log"]
-        VDC["/var/lib/docker/containers"]
-        VC["/var/lib/containerd"]
+    subgraph WhyDaemonSet["Why DaemonSet?"]
+        R1["✅ Runs on EVERY node"]
+        R2["✅ Auto-scales with cluster"]
+        R3["✅ Node-level access"]
+        R4["✅ Consistent log collection"]
     end
     
-    subgraph FluentdPod["Fluentd Pod Mounts"]
-        MVL["/var/log (read-only)"]
-        MVDC["/var/lib/docker/containers"]
-        MVC["/var/lib/containerd"]
-    end
-    
-    VL --> MVL
-    VDC --> MVDC
-    VC --> MVC
-    
-    style HostPaths fill:#44475a,stroke:#6272a4,color:#f8f8f2
-    style FluentdPod fill:#282a36,stroke:#50fa7b,color:#f8f8f2
+    style WhyDaemonSet fill:#282a36,stroke:#50fa7b,color:#f8f8f2
 ```
 
-| Host Path | Contains | Runtime |
-|-----------|----------|---------|
-| `/var/log` | Container logs, system logs | All |
-| `/var/lib/docker/containers` | Docker container logs | Docker |
-| `/var/lib/containerd` | Containerd container logs | Containerd/CRI-O |
+| Feature | Benefit |
+|---------|---------|
+| **One pod per node** | Every node's logs are collected |
+| **Auto-scales** | New nodes automatically get a collector |
+| **Host path access** | Can read node-level log files |
+| **Tolerations** | Runs on control-plane nodes too |
 
 ---
 
-## How to View Logs with Fluentd
+## Key Configuration Explained
 
-### Step 1: Apply Fluentd DaemonSet
+### 1. Tolerations (Run on ALL Nodes)
+
+```yaml
+tolerations:
+  - operator: Exists   # Tolerate any taint
+```
+
+This ensures the log collector runs on:
+- ✅ Worker nodes
+- ✅ Control-plane nodes
+- ✅ Tainted nodes (GPU, spot instances, etc.)
+
+### 2. Host Path Volume Mount
+
+```yaml
+volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log   # Node's log directory
+      
+volumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true     # Only read, don't modify
+```
+
+```mermaid
+flowchart LR
+    HostPath["/var/log<br/>(Node)"] --> Mount["/var/log<br/>(Pod)"]
+    
+    style HostPath fill:#44475a,stroke:#6272a4,color:#f8f8f2
+    style Mount fill:#50fa7b,stroke:#8be9fd,color:#282a36
+```
+
+### 3. Node Name Environment Variable
+
+```yaml
+env:
+  - name: NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+```
+
+This injects the node name so logs can be tagged with their source.
+
+---
+
+## Step-by-Step Demo
+
+### 1. Apply the Log Collector
 
 ```bash
 kubectl apply -f daemonset-fluentd.yaml
 ```
 
-### Step 2: Verify Fluentd is Running
+### 2. Check DaemonSet Status
 
 ```bash
-# Check DaemonSet status
-kubectl get daemonset fluentd -n kube-system
+kubectl get daemonset log-collector -n kube-system
 
 # Expected output:
-# NAME      DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE
-# fluentd   1         1         1       1            1
-
-# Check pods
-kubectl get pods -n kube-system -l app=fluentd-logging -o wide
+# NAME            DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE
+# log-collector   1         1         1       1            1
 ```
 
-### Step 3: View Collected Logs
+### 3. View Collector Pods
 
 ```bash
-# Stream Fluentd logs (shows all collected container logs)
-kubectl logs -n kube-system -l app=fluentd-logging -f
+kubectl get pods -n kube-system -l app=log-collector -o wide
 ```
 
-### Step 4: Generate Test Logs
+### 4. Watch Collected Logs
+
+```bash
+kubectl logs -n kube-system -l app=log-collector -f
+```
+
+### 5. Generate Test Logs
 
 ```bash
 # Create a pod that generates logs
 kubectl run test-logger --image=busybox -- sh -c "while true; do echo 'Hello from test-logger at $(date)'; sleep 5; done"
 
-# Watch Fluentd collect these logs
-kubectl logs -n kube-system -l app=fluentd-logging -f | grep test-logger
+# Watch the logs appear in the collector (wait ~30 seconds)
+kubectl logs -n kube-system -l app=log-collector -f
 ```
 
-### Step 5: Filter Logs by Namespace/Pod
+### 6. Cleanup
 
 ```bash
-# See logs from specific namespace
-kubectl logs -n kube-system -l app=fluentd-logging | grep '"namespace_name":"default"'
-
-# See logs from specific pod
-kubectl logs -n kube-system -l app=fluentd-logging | grep '"pod_name":"test-logger"'
+kubectl delete -f daemonset-fluentd.yaml
+kubectl delete pod test-logger
 ```
 
 ---
 
-## Log Flow Diagram
-
-```mermaid
-sequenceDiagram
-    participant App as Application Pod
-    participant Kubelet as Kubelet
-    participant FS as /var/log/containers/
-    participant Fluentd as Fluentd Pod
-    participant Output as Output (stdout/ES)
-    
-    App->>Kubelet: 1. Write to stdout
-    Kubelet->>FS: 2. Save to log file
-    Fluentd->>FS: 3. Tail log files
-    FS->>Fluentd: 4. New log lines
-    Fluentd->>Fluentd: 5. Parse & enrich
-    Fluentd->>Output: 6. Send to output
-    
-    Note over Fluentd: Adds metadata:<br/>• node_name<br/>• namespace<br/>• pod_name<br/>• container
-```
-
----
-
-## Fluentd Configuration Breakdown
-
-```yaml
-# SOURCE: Define where to read logs from
-<source>
-  @type tail                              # Tail files like 'tail -f'
-  path /var/log/containers/*.log          # Path to container logs
-  pos_file /var/log/fluentd.log.pos       # Track read position
-  tag kubernetes.*                        # Tag for routing
-</source>
-
-# FILTER: Add/modify log fields
-<filter kubernetes.**>
-  @type record_transformer
-  <record>
-    node_name "#{ENV['K8S_NODE_NAME']}"   # Add node name
-  </record>
-</filter>
-
-# OUTPUT: Where to send logs
-<match kubernetes.**>
-  @type stdout                            # Print to stdout
-</match>
-```
-
----
-
-## Common Output Destinations
+## Log Collector Comparison
 
 ```mermaid
 flowchart LR
-    Fluentd["Fluentd"] --> ES["Elasticsearch"]
-    Fluentd --> S3["AWS S3"]
-    Fluentd --> CW["CloudWatch"]
-    Fluentd --> Kafka["Kafka"]
-    Fluentd --> Stdout["stdout"]
+    subgraph Tools["Popular Log Collectors"]
+        FB["Fluent Bit<br/>🪶 Lightweight"]
+        FD["Fluentd<br/>🔧 Feature-rich"]
+        PT["Promtail<br/>📊 For Loki"]
+        FW["Filebeat<br/>📈 For ELK"]
+    end
     
-    style Fluentd fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style ES fill:#ffb86c,stroke:#f1fa8c,color:#282a36
-    style S3 fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
-    style CW fill:#8be9fd,stroke:#50fa7b,color:#282a36
-    style Kafka fill:#bd93f9,stroke:#ff79c6,color:#f8f8f2
+    style FB fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style FD fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style PT fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
+    style FW fill:#8be9fd,stroke:#50fa7b,color:#282a36
 ```
 
-| Destination | Plugin | Use Case |
-|-------------|--------|----------|
-| **Elasticsearch** | `@type elasticsearch` | Full-text search, Kibana |
-| **AWS S3** | `@type s3` | Long-term storage |
-| **CloudWatch** | `@type cloudwatch_logs` | AWS native logging |
-| **Kafka** | `@type kafka` | Stream processing |
-| **stdout** | `@type stdout` | Development/debugging |
+| Tool | Memory | Best For |
+|------|--------|----------|
+| **Fluent Bit** | ~10MB | Edge, resource-constrained |
+| **Fluentd** | ~50MB | Complex routing, plugins |
+| **Promtail** | ~25MB | Grafana Loki stack |
+| **Filebeat** | ~30MB | Elasticsearch/ELK stack |
 
 ---
 
-## Quick Reference Commands
+## Production Recommendations
+
+```mermaid
+flowchart TB
+    subgraph Stack1["ELK Stack"]
+        FB1["Filebeat"] --> ES["Elasticsearch"]
+        ES --> Kibana["Kibana"]
+    end
+    
+    subgraph Stack2["Loki Stack"]
+        PT["Promtail"] --> Loki["Loki"]
+        Loki --> Grafana["Grafana"]
+    end
+    
+    subgraph Stack3["Custom"]
+        FD["Fluentd"] --> S3["S3/CloudWatch"]
+    end
+    
+    style Stack1 fill:#282a36,stroke:#ffb86c,color:#f8f8f2
+    style Stack2 fill:#282a36,stroke:#50fa7b,color:#f8f8f2
+    style Stack3 fill:#282a36,stroke:#ff79c6,color:#f8f8f2
+```
+
+### Install Production Log Collectors
 
 ```bash
-# Apply Fluentd
-kubectl apply -f daemonset-fluentd.yaml
+# Fluent Bit (lightweight)
+helm repo add fluent https://fluent.github.io/helm-charts
+helm install fluent-bit fluent/fluent-bit
 
-# Check status
-kubectl get daemonset fluentd -n kube-system
-kubectl get pods -n kube-system -l app=fluentd-logging
+# Promtail (for Loki)
+helm repo add grafana https://grafana.github.io/helm-charts
+helm install promtail grafana/promtail
 
-# View collected logs
-kubectl logs -n kube-system -l app=fluentd-logging -f
-
-# View Fluentd config
-kubectl describe configmap fluentd-config -n kube-system
-
-# Restart Fluentd (after config change)
-kubectl rollout restart daemonset/fluentd -n kube-system
-
-# Delete everything
-kubectl delete -f daemonset-fluentd.yaml
+# Fluentd
+kubectl apply -f https://raw.githubusercontent.com/fluent/fluentd-kubernetes-daemonset/master/fluentd-daemonset-forward.yaml
 ```
 
 ---
@@ -318,28 +277,32 @@ kubectl delete -f daemonset-fluentd.yaml
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| Fluentd not starting | Missing RBAC | Apply ClusterRole and ClusterRoleBinding |
-| No logs collected | Wrong log path | Check `/var/log/containers/` exists on node |
-| Pods in CrashLoop | Config error | Check `kubectl logs -n kube-system <pod>` |
-| High memory usage | Too many logs | Add buffer limits, filter noisy logs |
+| No logs collected | Wrong log path | Check `/var/log/containers/` exists |
+| Pod not running on node | Taints blocking | Add `operator: Exists` toleration |
+| Missing logs from some pods | Namespace filtering | Check collector configuration |
+| High memory usage | Too many logs | Add log filtering, increase limits |
 
 ### Debug Commands
 
 ```bash
-# Check Fluentd pod logs
-kubectl logs -n kube-system -l app=fluentd-logging
+# Check collector pod
+kubectl get pods -n kube-system -l app=log-collector
 
-# Exec into Fluentd pod
-kubectl exec -it -n kube-system deploy/fluentd -- sh
+# View collector logs
+kubectl logs -n kube-system -l app=log-collector
 
-# Check if log files exist
-kubectl exec -it -n kube-system <fluentd-pod> -- ls /var/log/containers/
+# Exec into collector pod
+kubectl exec -it -n kube-system <pod-name> -- sh
+
+# List log files on node
+kubectl exec -it -n kube-system <pod-name> -- ls /var/log/containers/
 ```
 
 ---
 
 ## Related Files
 
+- [daemonset-fluentd.yaml](daemonset-fluentd.yaml) - Log collector DaemonSet
 - [daemonset-simple.yaml](daemonset-simple.yaml) - Basic DaemonSet example
 - [daemonset-explained.md](daemonset-explained.md) - DaemonSet concepts
 - [daemonset-node-selector.yaml](daemonset-node-selector.yaml) - NodeSelector example

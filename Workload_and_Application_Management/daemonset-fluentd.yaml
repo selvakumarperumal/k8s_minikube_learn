@@ -1,309 +1,129 @@
 # ============================================================================
-# DAEMONSET - Fluentd Log Collector
+# DAEMONSET - Simple Log Collector using Busybox
 # ============================================================================
-# Fluentd is a popular log collection daemon that runs on every node
-# to collect container logs and ship them to a centralized location.
+# This is a SIMPLIFIED example that demonstrates the DaemonSet pattern
+# for log collection. Uses busybox instead of Fluentd for simplicity.
 #
-# This DaemonSet:
-# - Runs on ALL nodes (including control-plane)
-# - Mounts host paths to read container logs
-# - Uses a ConfigMap for Fluentd configuration
-# - Outputs to stdout (can be configured for Elasticsearch, S3, etc.)
-#
-# This is a REAL-WORLD example of how DaemonSets are used in production!
+# For production, use:
+# - Fluentd: https://github.com/fluent/fluentd-kubernetes-daemonset
+# - Fluent Bit: https://docs.fluentbit.io/manual/installation/kubernetes
+# - Promtail (for Loki): https://grafana.com/docs/loki/latest/clients/promtail/
 # ============================================================================
 
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: fluentd
-  namespace: kube-system # Run in kube-system for system-level access
+  name: log-collector
+  namespace: kube-system
   labels:
-    app: fluentd-logging
-    k8s-app: fluentd-logging
+    app: log-collector
 spec:
-  # ---------------------------------------------------------------------------
-  # SELECTOR - Must match template labels
-  # ---------------------------------------------------------------------------
   selector:
     matchLabels:
-      app: fluentd-logging
+      app: log-collector
 
-  # ---------------------------------------------------------------------------
-  # UPDATE STRATEGY
-  # ---------------------------------------------------------------------------
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1 # Update one node at a time
+      maxUnavailable: 1
 
-  # ---------------------------------------------------------------------------
-  # POD TEMPLATE
-  # ---------------------------------------------------------------------------
   template:
     metadata:
       labels:
-        app: fluentd-logging
+        app: log-collector
     spec:
-      # -----------------------------------------------------------------------
-      # SERVICE ACCOUNT - For RBAC permissions
-      # -----------------------------------------------------------------------
-      # Fluentd needs permissions to read Kubernetes metadata
-      serviceAccountName: fluentd
-
-      # -----------------------------------------------------------------------
-      # TOLERATIONS - Run on ALL nodes including control-plane
-      # -----------------------------------------------------------------------
-      # Without this, Fluentd won't run on tainted nodes
-      tolerations:
-        # Run on control-plane nodes
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-          effect: NoSchedule
-        # Run on master nodes (older Kubernetes)
-        - key: node-role.kubernetes.io/master
-          operator: Exists
-          effect: NoSchedule
-        # Tolerate any taint (optional - remove if you want selective nodes)
-        - operator: Exists
-          effect: NoSchedule
-
-      # -----------------------------------------------------------------------
-      # TERMINATION GRACE PERIOD
-      # -----------------------------------------------------------------------
-      # Give Fluentd time to flush logs before terminating
       terminationGracePeriodSeconds: 30
 
-      containers:
-        - name: fluentd
-          image: fluent/fluentd:v1.14-1
+      # Run on all nodes including control-plane
+      tolerations:
+        - operator: Exists
 
-          # -------------------------------------------------------------------
-          # ENVIRONMENT VARIABLES
-          # -------------------------------------------------------------------
+      containers:
+        - name: log-collector
+          image: busybox:latest
+
+          command:
+            - sh
+            - -c
+            - |
+              echo "Log collector starting on node: $NODE_NAME"
+              echo "Monitoring /var/log/containers/*.log"
+              echo "-------------------------------------------"
+
+              # Tail all container logs and output to stdout
+              # In production, this would be shipped to Elasticsearch/Loki/etc.
+              while true; do
+                for log in /var/log/containers/*.log; do
+                  if [ -f "$log" ]; then
+                    # Output last 5 lines from each log file
+                    echo "=== $(basename $log) ==="
+                    tail -5 "$log" 2>/dev/null || true
+                  fi
+                done
+                echo "--- Collected at $(date) from $NODE_NAME ---"
+                sleep 30
+              done
+
           env:
-            # Run as root to read all log files
-            - name: FLUENT_UID
-              value: "0"
-            # Node name for tagging logs
-            - name: K8S_NODE_NAME
+            - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
 
-          # -------------------------------------------------------------------
-          # RESOURCE LIMITS - Important for DaemonSets!
-          # -------------------------------------------------------------------
-          # Runs on every node, so keep resource usage reasonable
           resources:
             requests:
-              cpu: 100m # 0.1 CPU guaranteed
-              memory: 200Mi # 200Mi guaranteed
+              cpu: 50m
+              memory: 64Mi
             limits:
-              cpu: 200m # 0.2 CPU maximum
-              memory: 400Mi # 400Mi maximum
+              cpu: 100m
+              memory: 128Mi
 
-          # -------------------------------------------------------------------
-          # VOLUME MOUNTS - Access host log files
-          # -------------------------------------------------------------------
           volumeMounts:
-            # Host's /var/log directory (contains container logs)
             - name: varlog
               mountPath: /var/log
               readOnly: true
 
-            # Docker container logs (for Docker runtime)
-            - name: varlibdockercontainers
-              mountPath: /var/lib/docker/containers
-              readOnly: true
-
-            # Containerd logs (for containerd runtime - Minikube default)
-            - name: varlibcontainerd
-              mountPath: /var/lib/containerd
-              readOnly: true
-
-            # Fluentd configuration from ConfigMap
-            - name: fluentd-config
-              mountPath: /fluentd/etc
-
-      # -----------------------------------------------------------------------
-      # VOLUMES - Define what to mount
-      # -----------------------------------------------------------------------
       volumes:
-        # Host path: /var/log (contains Kubernetes container logs)
         - name: varlog
           hostPath:
             path: /var/log
-            type: Directory
-
-        # Host path: Docker container logs
-        - name: varlibdockercontainers
-          hostPath:
-            path: /var/lib/docker/containers
-            type: DirectoryOrCreate
-
-        # Host path: Containerd logs
-        - name: varlibcontainerd
-          hostPath:
-            path: /var/lib/containerd
-            type: DirectoryOrCreate
-
-        # ConfigMap containing Fluentd configuration
-        - name: fluentd-config
-          configMap:
-            name: fluentd-config
-
----
-# ============================================================================
-# SERVICE ACCOUNT - RBAC Identity
-# ============================================================================
-# Fluentd needs a service account to access Kubernetes API
-# (for getting pod metadata, labels, etc.)
-
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: fluentd
-  namespace: kube-system
-  labels:
-    app: fluentd-logging
-
----
-# ============================================================================
-# CLUSTER ROLE - Permissions to read pods/namespaces
-# ============================================================================
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: fluentd
-  labels:
-    app: fluentd-logging
-rules:
-  - apiGroups: [""]
-    resources:
-      - pods
-      - namespaces
-    verbs:
-      - get
-      - list
-      - watch
-
----
-# ============================================================================
-# CLUSTER ROLE BINDING - Connect ServiceAccount to ClusterRole
-# ============================================================================
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: fluentd
-  labels:
-    app: fluentd-logging
-roleRef:
-  kind: ClusterRole
-  name: fluentd
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: fluentd
-    namespace: kube-system
-
----
-# ============================================================================
-# CONFIGMAP - Fluentd Configuration
-# ============================================================================
-# This defines how Fluentd collects, parses, and outputs logs
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fluentd-config
-  namespace: kube-system
-  labels:
-    app: fluentd-logging
-data:
-  fluent.conf: |
-    # =========================================================================
-    # SOURCE: Tail container logs
-    # =========================================================================
-    <source>
-      @type tail
-      path /var/log/containers/*.log
-      pos_file /var/log/fluentd-containers.log.pos
-      tag kubernetes.*
-      read_from_head true
-      
-      <parse>
-        @type json
-        time_format %Y-%m-%dT%H:%M:%S.%NZ
-      </parse>
-    </source>
-
-    # =========================================================================
-    # FILTER: Add Kubernetes metadata
-    # =========================================================================
-    <filter kubernetes.**>
-      @type record_transformer
-      enable_ruby true
-      <record>
-        node_name "#{ENV['K8S_NODE_NAME']}"
-        collected_at ${time}
-      </record>
-    </filter>
-
-    # =========================================================================
-    # OUTPUT: Print to stdout (visible in kubectl logs)
-    # =========================================================================
-    # For production, replace with Elasticsearch, S3, CloudWatch, etc.
-    <match kubernetes.**>
-      @type stdout
-      <format>
-        @type json
-      </format>
-    </match>
-
-    # =========================================================================
-    # OUTPUT: Example for Elasticsearch (commented out)
-    # =========================================================================
-    # <match kubernetes.**>
-    #   @type elasticsearch
-    #   host elasticsearch.logging.svc.cluster.local
-    #   port 9200
-    #   logstash_format true
-    #   logstash_prefix kubernetes
-    # </match>
-
 # ============================================================================
 # HOW TO USE
 # ============================================================================
 #
-# STEP 1: Apply all resources
+# STEP 1: Apply
 #   kubectl apply -f daemonset-fluentd.yaml
 #
-# STEP 2: Verify Fluentd is running on all nodes
-#   kubectl get daemonset fluentd -n kube-system
-#   kubectl get pods -n kube-system -l app=fluentd-logging -o wide
+# STEP 2: Check status
+#   kubectl get daemonset log-collector -n kube-system
+#   kubectl get pods -n kube-system -l app=log-collector
 #
-# STEP 3: View Fluentd logs (contains collected container logs)
-#   kubectl logs -n kube-system -l app=fluentd-logging -f
+# STEP 3: View collected logs
+#   kubectl logs -n kube-system -l app=log-collector -f
 #
-# STEP 4: Generate some logs from another pod
-#   kubectl run test-logger --image=busybox -- sh -c "while true; do echo 'Test log message'; sleep 5; done"
+# STEP 4: Generate test logs
+#   kubectl run test-logger --image=busybox -- sh -c "while true; do echo 'Hello from test-logger at $(date)'; sleep 5; done"
 #
-# STEP 5: See the logs in Fluentd output
-#   kubectl logs -n kube-system -l app=fluentd-logging -f | grep "Test log"
+# STEP 5: See the test logs in collector output (wait ~30 seconds)
+#   kubectl logs -n kube-system -l app=log-collector -f
 #
 # CLEANUP:
 #   kubectl delete -f daemonset-fluentd.yaml
 #   kubectl delete pod test-logger
 #
 # ============================================================================
-# PRODUCTION TIPS
+# FOR PRODUCTION - Use proper log collectors:
 # ============================================================================
 #
-# 1. Replace stdout output with Elasticsearch/CloudWatch/S3
-# 2. Add resource limits based on log volume
-# 3. Consider using fluent-bit for lower memory usage
-# 4. Add buffer configuration for reliability
-# 5. Set up log rotation on nodes
+# FLUENT BIT (lightweight):
+#   helm repo add fluent https://fluent.github.io/helm-charts
+#   helm install fluent-bit fluent/fluent-bit
+#
+# FLUENTD:
+#   kubectl apply -f https://raw.githubusercontent.com/fluent/fluentd-kubernetes-daemonset/master/fluentd-daemonset-elasticsearch.yaml
+#
+# PROMTAIL (for Loki):
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm install promtail grafana/promtail
 #
 # ============================================================================

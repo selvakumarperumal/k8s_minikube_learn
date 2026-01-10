@@ -1,0 +1,575 @@
+# ============================================================================
+# STORAGECLASS - Complete Examples
+# ============================================================================
+# This file contains StorageClass examples for dynamic provisioning
+#
+# HOW TO RUN:
+# -----------
+# 1. View existing StorageClasses:
+#    kubectl get storageclass
+#
+# 2. Apply examples:
+#    kubectl apply -f 03-storageclass-examples.yaml
+#
+# 3. Test dynamic provisioning (see individual sections)
+#
+# 4. Cleanup:
+#    kubectl delete -f 03-storageclass-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# EXAMPLE 1: Basic StorageClass (Minikube)
+# ============================================================================
+# Simple StorageClass using Minikube's hostpath provisioner
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: basic-storage
+  labels:
+    example: basic
+# ---------------------------------------------------------------------------
+# provisioner: Who creates the volumes
+# Minikube uses: k8s.io/minikube-hostpath
+# ---------------------------------------------------------------------------
+provisioner: k8s.io/minikube-hostpath
+
+# ---------------------------------------------------------------------------
+# reclaimPolicy: What happens when PVC is deleted
+# - Delete: Delete PV and backend storage (default)
+# - Retain: Keep PV and data
+# ---------------------------------------------------------------------------
+reclaimPolicy: Delete
+
+# ---------------------------------------------------------------------------
+# volumeBindingMode: When to provision
+# - Immediate: Provision when PVC created (default)
+# - WaitForFirstConsumer: Wait for pod to be scheduled
+# ---------------------------------------------------------------------------
+volumeBindingMode: Immediate
+
+---
+# Test PVC using basic StorageClass
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: basic-sc-pvc
+  labels:
+    example: basic
+spec:
+  storageClassName: basic-storage # Use our StorageClass
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check - PV is automatically created!
+# kubectl get pvc basic-sc-pvc
+# kubectl get pv
+#
+# # Note: No need to create PV manually!
+
+---
+# ============================================================================
+# EXAMPLE 2: StorageClass with Retain Policy
+# ============================================================================
+# Keep PV and data when PVC is deleted
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: retain-storage
+  labels:
+    example: retain
+provisioner: k8s.io/minikube-hostpath
+# ---------------------------------------------------------------------------
+# reclaimPolicy: Retain
+# PV and data are preserved when PVC is deleted
+# ---------------------------------------------------------------------------
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: retain-sc-pvc
+  labels:
+    example: retain
+spec:
+  storageClassName: retain-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Write some data
+# kubectl run test --image=busybox --restart=Never \
+#   --overrides='{"spec":{"containers":[{"name":"test","image":"busybox","command":["sh","-c","echo data > /mnt/file.txt; sleep 1"],"volumeMounts":[{"name":"vol","mountPath":"/mnt"}]}],"volumes":[{"name":"vol","persistentVolumeClaim":{"claimName":"retain-sc-pvc"}}]}}' \
+#   --rm -it
+#
+# # Delete PVC
+# kubectl delete pvc retain-sc-pvc
+#
+# # PV still exists with "Released" status!
+# kubectl get pv
+
+---
+# ============================================================================
+# EXAMPLE 3: StorageClass with Volume Expansion
+# ============================================================================
+# Allow PVCs to be resized after creation
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: expandable-storage
+  labels:
+    example: expandable
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+# ---------------------------------------------------------------------------
+# allowVolumeExpansion: true
+# Allows PVCs to request more storage after creation
+# ---------------------------------------------------------------------------
+allowVolumeExpansion: true
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: expandable-pvc
+  labels:
+    example: expandable
+spec:
+  storageClassName: expandable-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi # Start small
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check initial size
+# kubectl get pvc expandable-pvc
+# # CAPACITY: 100Mi
+#
+# # Expand to 500Mi
+# kubectl patch pvc expandable-pvc -p '{"spec":{"resources":{"requests":{"storage":"500Mi"}}}}'
+#
+# # Check new size
+# kubectl get pvc expandable-pvc
+# # CAPACITY: 500Mi
+#
+# # Note: Actual filesystem resize happens when mounted
+
+---
+# ============================================================================
+# EXAMPLE 4: StorageClass with WaitForFirstConsumer
+# ============================================================================
+# Wait for pod to be scheduled before creating PV
+# Important for multi-zone clusters!
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: delayed-storage
+  labels:
+    example: delayed
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Delete
+# ---------------------------------------------------------------------------
+# volumeBindingMode: WaitForFirstConsumer
+# - Don't create PV until a pod needs it
+# - PV is created in same zone as pod
+# - Prevents zone mismatch issues!
+# ---------------------------------------------------------------------------
+volumeBindingMode: WaitForFirstConsumer
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: delayed-pvc
+  labels:
+    example: delayed
+spec:
+  storageClassName: delayed-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Pod that will trigger PV creation
+apiVersion: v1
+kind: Pod
+metadata:
+  name: delayed-pod
+  labels:
+    example: delayed
+spec:
+  containers:
+    - name: app
+      image: busybox:1.35
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: delayed-pvc
+
+# HOW TO TEST:
+# ------------
+# # Apply only PVC first
+# kubectl apply -f <pvc-section-only>
+#
+# # Check PVC - should be Pending!
+# kubectl get pvc delayed-pvc
+# # STATUS: Pending (waiting for pod)
+#
+# # Now apply pod
+# kubectl apply -f <pod-section>
+#
+# # Check again - now Bound!
+# kubectl get pvc delayed-pvc
+# # STATUS: Bound
+
+---
+# ============================================================================
+# EXAMPLE 5: Default StorageClass
+# ============================================================================
+# Used when PVC doesn't specify storageClassName
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: my-default-storage
+  annotations:
+    # ---------------------------------------------------------------------------
+    # This annotation makes this the DEFAULT StorageClass!
+    # ---------------------------------------------------------------------------
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    example: default
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+
+---
+# PVC without storageClassName - uses default
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: default-sc-pvc
+  labels:
+    example: default
+spec:
+  # No storageClassName! Uses default StorageClass
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Mi
+
+# HOW TO TEST:
+# ------------
+# # NOTE: Minikube already has a default StorageClass
+# # Don't apply this if you don't want to change it!
+#
+# # Check current default
+# kubectl get storageclass
+# # Look for (default) next to name
+#
+# # Remove default from existing
+# kubectl patch storageclass standard -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+#
+# # Apply our default
+# kubectl apply -f <this-section>
+#
+# # Create PVC without storageClassName
+# kubectl apply -f <pvc-section>
+#
+# # Check - it uses my-default-storage!
+# kubectl get pvc default-sc-pvc -o jsonpath='{.spec.storageClassName}'
+
+---
+# ============================================================================
+# EXAMPLE 6: AWS EBS StorageClass (Reference)
+# ============================================================================
+# Example for AWS EKS clusters with EBS CSI driver
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3
+  labels:
+    example: aws-ebs
+# ---------------------------------------------------------------------------
+# provisioner: AWS EBS CSI driver
+# ---------------------------------------------------------------------------
+provisioner: ebs.csi.aws.com
+
+# ---------------------------------------------------------------------------
+# parameters: EBS-specific settings
+# ---------------------------------------------------------------------------
+parameters:
+  # Volume type: gp2, gp3, io1, io2, st1, sc1
+  type: gp3
+
+  # Performance (gp3 only)
+  iops: "3000"
+  throughput: "125"
+
+  # Encryption
+  encrypted: "true"
+  # kmsKeyId: "arn:aws:kms:us-east-1:123456789:key/abc-123"
+
+  # Filesystem type
+  csi.storage.k8s.io/fstype: ext4
+
+# Zone-aware binding
+volumeBindingMode: WaitForFirstConsumer
+
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+
+# Example PVC for AWS
+# ---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: my-ebs-claim
+# spec:
+#   storageClassName: ebs-gp3
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 100Gi
+
+---
+# ============================================================================
+# EXAMPLE 7: GCP Persistent Disk StorageClass (Reference)
+# ============================================================================
+# Example for GKE clusters
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gcp-pd-ssd
+  labels:
+    example: gcp-pd
+# ---------------------------------------------------------------------------
+# provisioner: GCP PD CSI driver
+# ---------------------------------------------------------------------------
+provisioner: pd.csi.storage.gke.io
+
+parameters:
+  # Disk type: pd-standard, pd-ssd, pd-balanced
+  type: pd-ssd
+
+  # Replication: none or regional-pd
+  replication-type: none
+
+  # Filesystem
+  csi.storage.k8s.io/fstype: ext4
+
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+
+---
+# ============================================================================
+# EXAMPLE 8: Azure Disk StorageClass (Reference)
+# ============================================================================
+# Example for AKS clusters
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-premium
+  labels:
+    example: azure-disk
+# ---------------------------------------------------------------------------
+# provisioner: Azure Disk CSI driver
+# ---------------------------------------------------------------------------
+provisioner: disk.csi.azure.com
+
+parameters:
+  # SKU: Standard_LRS, Premium_LRS, StandardSSD_LRS, UltraSSD_LRS
+  skuName: Premium_LRS
+
+  # Caching: None, ReadOnly, ReadWrite
+  cachingMode: ReadOnly
+
+  # Availability zone (optional)
+  # zone: "1"
+
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+
+---
+# ============================================================================
+# EXAMPLE 9: NFS StorageClass (Reference)
+# ============================================================================
+# Example for NFS dynamic provisioning
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-dynamic
+  labels:
+    example: nfs
+# ---------------------------------------------------------------------------
+# provisioner: NFS CSI driver
+# ---------------------------------------------------------------------------
+provisioner: nfs.csi.k8s.io
+
+parameters:
+  # NFS server
+  server: 192.168.1.100
+
+  # Base share path
+  share: /exports/k8s
+
+  # Subdirectory per PVC
+  subDir: "${pvc.metadata.namespace}/${pvc.metadata.name}"
+
+volumeBindingMode: Immediate
+reclaimPolicy: Delete
+
+mountOptions:
+  - nfsvers=4.1
+  - hard
+  - noatime
+
+---
+# ============================================================================
+# EXAMPLE 10: Multiple StorageClasses for Different Tiers
+# ============================================================================
+# Production setup with fast, standard, and archive storage
+
+# Fast tier - for databases
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+  labels:
+    tier: fast
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Retain # Keep important data!
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+# Standard tier - for general workloads
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard-tier
+  labels:
+    tier: standard
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+---
+# Archive tier - for backups (cheap, slow)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: archive
+  labels:
+    tier: archive
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Retain # Keep backups!
+volumeBindingMode: Immediate
+
+---
+# PVCs using different tiers
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: database-pvc
+  labels:
+    tier: fast
+spec:
+  storageClassName: fast # Fast for database
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logs-pvc
+  labels:
+    tier: standard
+spec:
+  storageClassName: standard-tier # Standard for logs
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  labels:
+    tier: archive
+spec:
+  storageClassName: archive # Archive for backups
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check StorageClasses
+# kubectl get storageclass
+#
+# # Check PVCs with their respective StorageClasses
+# kubectl get pvc -l tier
+
+# ============================================================================
+# CLEANUP
+# ============================================================================
+#
+# kubectl delete -f 03-storageclass-examples.yaml
+#
+# # Note: PVs with Retain policy need manual deletion
+# kubectl get pv
+# kubectl delete pv <pv-name>
+#
+# ============================================================================

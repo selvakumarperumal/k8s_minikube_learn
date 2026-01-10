@@ -1,0 +1,718 @@
+# ============================================================================
+# PERSISTENTVOLUME & PERSISTENTVOLUMECLAIM - Complete Examples
+# ============================================================================
+# This file contains PV/PVC examples with static provisioning
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f 02-pv-pvc-examples.yaml
+#
+# 2. Check PV/PVC:
+#    kubectl get pv,pvc
+#
+# 3. Test persistence (see individual sections below)
+#
+# 4. Cleanup:
+#    kubectl delete -f 02-pv-pvc-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# EXAMPLE 1: Basic PV and PVC (Manual/Static Provisioning)
+# ============================================================================
+# This is the traditional workflow:
+# 1. Admin creates PV
+# 2. Developer creates PVC
+# 3. Kubernetes binds them
+
+# Step 1: Admin creates PersistentVolume
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: basic-pv
+  labels:
+    type: local
+    example: basic
+spec:
+  # ---------------------------------------------------------------------------
+  # capacity: How much storage this PV provides
+  # ---------------------------------------------------------------------------
+  capacity:
+    storage: 1Gi
+
+  # ---------------------------------------------------------------------------
+  # accessModes: How this volume can be mounted
+  # - ReadWriteOnce (RWO): Single node read-write
+  # - ReadOnlyMany (ROX): Multiple nodes read-only
+  # - ReadWriteMany (RWX): Multiple nodes read-write
+  # ---------------------------------------------------------------------------
+  accessModes:
+    - ReadWriteOnce
+
+  # ---------------------------------------------------------------------------
+  # persistentVolumeReclaimPolicy: What happens when PVC is deleted
+  # - Retain: Keep PV and data (manual cleanup needed)
+  # - Delete: Delete PV and backend storage
+  # - Recycle: Deprecated - use Delete
+  # ---------------------------------------------------------------------------
+  persistentVolumeReclaimPolicy: Retain
+
+  # ---------------------------------------------------------------------------
+  # storageClassName: Used for binding with PVC
+  # Empty string "" means no StorageClass (won't use dynamic provisioning)
+  # ---------------------------------------------------------------------------
+  storageClassName: manual
+
+  # ---------------------------------------------------------------------------
+  # hostPath: Storage backend (for demo/single-node only!)
+  # ---------------------------------------------------------------------------
+  hostPath:
+    path: /tmp/k8s-pv/basic
+    type: DirectoryOrCreate
+
+---
+# Step 2: Developer creates PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: basic-pvc
+  labels:
+    example: basic
+spec:
+  # ---------------------------------------------------------------------------
+  # accessModes: Must match a PV with these capabilities
+  # ---------------------------------------------------------------------------
+  accessModes:
+    - ReadWriteOnce
+
+  # ---------------------------------------------------------------------------
+  # resources: How much storage you need
+  # PV capacity must be >= this request
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      storage: 500Mi # Request 500Mi (PV has 1Gi)
+
+  # ---------------------------------------------------------------------------
+  # storageClassName: Must match PV's storageClassName
+  # ---------------------------------------------------------------------------
+  storageClassName: manual
+
+---
+# Step 3: Use PVC in Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: basic-pv-pod
+  labels:
+    example: basic
+spec:
+  containers:
+    - name: app
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+      volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: basic-pvc
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # Check binding
+# kubectl get pv
+# # NAME       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM
+# # basic-pv   1Gi        RWO            Retain           Bound    default/basic-pvc
+#
+# kubectl get pvc
+# # NAME        STATUS   VOLUME     CAPACITY   ACCESS MODES
+# # basic-pvc   Bound    basic-pv   1Gi        RWO
+#
+# # Write data
+# kubectl exec basic-pv-pod -- sh -c 'echo "Hello PV!" > /usr/share/nginx/html/index.html'
+#
+# # Read data
+# kubectl exec basic-pv-pod -- cat /usr/share/nginx/html/index.html
+#
+# # Delete pod (data persists)
+# kubectl delete pod basic-pv-pod
+#
+# # Recreate pod - data is still there!
+# kubectl apply -f <pod-section>
+# kubectl exec basic-pv-pod -- cat /usr/share/nginx/html/index.html
+
+---
+# ============================================================================
+# EXAMPLE 2: PV with Selector (Targeted Binding)
+# ============================================================================
+# Use labels to bind PVC to specific PV
+
+# Admin creates multiple PVs with different labels
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ssd-pv
+  labels:
+    disk-type: ssd # Label for selection
+    environment: production
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /tmp/k8s-pv/ssd
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hdd-pv
+  labels:
+    disk-type: hdd # Different label
+    environment: development
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /tmp/k8s-pv/hdd
+    type: DirectoryOrCreate
+
+---
+# Developer selects specific PV using selector
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ssd-pvc
+  labels:
+    example: selector
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: manual
+
+  # ---------------------------------------------------------------------------
+  # selector: Choose specific PV by labels
+  # ---------------------------------------------------------------------------
+  selector:
+    matchLabels:
+      disk-type: ssd # Only bind to SSD PV!
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check which PV was bound
+# kubectl get pvc ssd-pvc
+# # CLAIM bound to ssd-pv (not hdd-pv!)
+#
+# kubectl get pv -l disk-type=ssd
+# # Shows ssd-pv is Bound
+
+---
+# ============================================================================
+# EXAMPLE 3: ReadWriteMany (RWX) PV/PVC
+# ============================================================================
+# Multiple pods on different nodes can read AND write
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: rwx-pv
+  labels:
+    example: rwx
+spec:
+  capacity:
+    storage: 2Gi
+  # ---------------------------------------------------------------------------
+  # ReadWriteMany: Multiple nodes can mount read-write
+  # NOTE: Not all storage backends support this!
+  # Supported: NFS, CephFS, AzureFile
+  # NOT Supported: AWS EBS, GCE PD, Azure Disk
+  # ---------------------------------------------------------------------------
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+
+  # In production, use NFS:
+  # nfs:
+  #   server: 192.168.1.100
+  #   path: /exports/shared
+
+  # For demo, hostPath (single node only)
+  hostPath:
+    path: /tmp/k8s-pv/shared
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwx-pvc
+  labels:
+    example: rwx
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: manual
+---
+# Two pods sharing the same RWX volume
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwx-demo
+  labels:
+    example: rwx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rwx-demo
+  template:
+    metadata:
+      labels:
+        app: rwx-demo
+    spec:
+      containers:
+        - name: writer
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Each pod writes with its hostname
+              while true; do
+                echo "$(date) - $(hostname)" >> /shared/log.txt
+                sleep 5
+              done
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: rwx-pvc
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check both pods are writing
+# kubectl get pods -l app=rwx-demo
+#
+# # Read shared log from any pod
+# kubectl exec deploy/rwx-demo -- cat /shared/log.txt
+# # Should see entries from BOTH pods!
+
+---
+# ============================================================================
+# EXAMPLE 4: ReadOnlyMany (ROX) PV/PVC
+# ============================================================================
+# Multiple pods can read (no writes)
+# Good for: shared config, static content
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: rox-pv
+  labels:
+    example: rox
+spec:
+  capacity:
+    storage: 1Gi
+  # ---------------------------------------------------------------------------
+  # ReadOnlyMany: Multiple nodes can mount read-only
+  # ---------------------------------------------------------------------------
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /tmp/k8s-pv/readonly
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rox-pvc
+  labels:
+    example: rox
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 500Mi
+  storageClassName: manual
+---
+# Pod using read-only volume
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rox-pod
+  labels:
+    example: rox
+spec:
+  containers:
+    - name: reader
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== Read-only volume demo ==="
+          ls -la /readonly/
+
+          # Try to write (will fail!)
+          echo "test" > /readonly/test.txt 2>&1 || echo "Write failed (expected!)"
+
+          sleep infinity
+      volumeMounts:
+        - name: readonly-vol
+          mountPath: /readonly
+          readOnly: true # Enforce read-only at mount level
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+  volumes:
+    - name: readonly-vol
+      persistentVolumeClaim:
+        claimName: rox-pvc
+        readOnly: true # Also set at volume level
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Try to write (will fail)
+# kubectl exec rox-pod -- sh -c 'echo test > /readonly/test.txt'
+# # Error: Read-only file system
+
+---
+# ============================================================================
+# EXAMPLE 5: Volume Mode - Block Device
+# ============================================================================
+# Mount as raw block device instead of filesystem
+# Use case: Databases that manage their own data format
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: block-pv
+  labels:
+    example: block
+spec:
+  capacity:
+    storage: 1Gi
+  # ---------------------------------------------------------------------------
+  # volumeMode: Block vs Filesystem
+  # - Filesystem (default): PV is formatted and mounted
+  # - Block: Raw block device, no filesystem
+  # ---------------------------------------------------------------------------
+  volumeMode: Block
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /tmp/k8s-block-device
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+  labels:
+    example: block
+spec:
+  volumeMode: Block # Must match PV
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+  storageClassName: manual
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: block-pod
+  labels:
+    example: block
+spec:
+  containers:
+    - name: block-consumer
+      image: busybox:1.35
+      command: ["sh", "-c", "sleep infinity"]
+
+      # ---------------------------------------------------------------------------
+      # volumeDevices: For block mode (instead of volumeMounts)
+      # ---------------------------------------------------------------------------
+      volumeDevices:
+        - name: block-vol
+          devicePath: /dev/xvda # Device path, not mount path!
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: block-vol
+      persistentVolumeClaim:
+        claimName: block-pvc
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check device
+# kubectl exec block-pod -- ls -la /dev/xvda
+# # It's a block device, not a directory!
+
+---
+# ============================================================================
+# EXAMPLE 6: Retain Policy Demo
+# ============================================================================
+# Shows what happens when PVC is deleted with Retain policy
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: retain-pv
+  labels:
+    example: retain
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  # ---------------------------------------------------------------------------
+  # persistentVolumeReclaimPolicy: Retain
+  # When PVC deleted:
+  # 1. PV status becomes "Released" (not Available)
+  # 2. Data is preserved
+  # 3. Admin must manually reclaim (delete/recreate PV)
+  # ---------------------------------------------------------------------------
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /tmp/k8s-pv/retain
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: retain-pvc
+  labels:
+    example: retain
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+  storageClassName: manual
+  selector:
+    matchLabels:
+      example: retain
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check initial state
+# kubectl get pv retain-pv
+# # STATUS: Bound
+#
+# # Delete PVC
+# kubectl delete pvc retain-pvc
+#
+# # Check PV state
+# kubectl get pv retain-pv
+# # STATUS: Released (NOT Available!)
+# # CLAIM: default/retain-pvc (still shows deleted claim)
+#
+# # Data is preserved! But PV can't be reused.
+# # To reuse, delete PV and recreate:
+# kubectl delete pv retain-pv
+# kubectl apply -f <pv-section>
+
+---
+# ============================================================================
+# EXAMPLE 7: Delete Policy Demo
+# ============================================================================
+# Shows what happens when PVC is deleted with Delete policy
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: delete-pv
+  labels:
+    example: delete
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  # ---------------------------------------------------------------------------
+  # persistentVolumeReclaimPolicy: Delete
+  # When PVC deleted:
+  # 1. PV is deleted automatically
+  # 2. Backend storage is deleted (if supported)
+  # 3. Data is LOST!
+  # ---------------------------------------------------------------------------
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: manual
+  hostPath:
+    path: /tmp/k8s-pv/delete
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: delete-pvc
+  labels:
+    example: delete
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+  storageClassName: manual
+  selector:
+    matchLabels:
+      example: delete
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check initial state
+# kubectl get pv delete-pv
+# # STATUS: Bound
+#
+# # Delete PVC
+# kubectl delete pvc delete-pvc
+#
+# # Check PV state
+# kubectl get pv delete-pv
+# # PV is GONE! (automatically deleted)
+
+---
+# ============================================================================
+# EXAMPLE 8: PVC with Deployment (Data survives scaling)
+# ============================================================================
+# Shows that PVC data persists across pod restarts and scaling
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deploy-pvc
+  labels:
+    example: deployment
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Uses default StorageClass (dynamic provisioning in Minikube)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: persistent-deploy
+  labels:
+    example: deployment
+spec:
+  replicas: 1 # Only 1 because RWO
+  selector:
+    matchLabels:
+      app: persistent-app
+  template:
+    metadata:
+      labels:
+        app: persistent-app
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Increment counter on each start
+              counter=$(cat /data/counter.txt 2>/dev/null || echo 0)
+              counter=$((counter + 1))
+              echo $counter > /data/counter.txt
+              echo "Container started $counter times (this pod)"
+
+              # Keep running and show counter
+              while true; do
+                echo "Counter: $(cat /data/counter.txt)"
+                sleep 10
+              done
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: deploy-pvc
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check counter
+# kubectl logs deploy/persistent-deploy
+#
+# # Restart deployment
+# kubectl rollout restart deployment/persistent-deploy
+#
+# # Counter increases - data persisted!
+# kubectl logs deploy/persistent-deploy
+
+# ============================================================================
+# CLEANUP
+# ============================================================================
+#
+# # Delete everything
+# kubectl delete -f 02-pv-pvc-examples.yaml
+#
+# # Some PVs may be in Released state and need manual deletion
+# kubectl get pv
+# kubectl delete pv <pv-name>
+#
+# ============================================================================

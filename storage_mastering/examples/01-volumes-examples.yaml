@@ -1,0 +1,717 @@
+# ============================================================================
+# VOLUMES - Complete Examples
+# ============================================================================
+# This file contains all basic volume types with detailed explanations
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f 01-volumes-examples.yaml
+#
+# 2. Check pods:
+#    kubectl get pods
+#
+# 3. Test each volume (see individual sections below)
+#
+# 4. Cleanup:
+#    kubectl delete -f 01-volumes-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# EXAMPLE 1: emptyDir - Shared Temporary Storage
+# ============================================================================
+# emptyDir is created when pod starts, deleted when pod is removed
+# Perfect for: temp files, caches, sharing data between containers
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emptydir-demo
+  labels:
+    example: emptydir
+spec:
+  containers:
+    # ---------------------------------------------------------------------------
+    # Container 1: Writer - writes logs
+    # ---------------------------------------------------------------------------
+    - name: writer
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          # This script runs in the "writer" container
+          echo "Writer container started"
+
+          # Write to shared volume every 3 seconds
+          counter=0
+          while true; do
+            counter=$((counter + 1))
+            timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+            
+            # Append log entry to shared file
+            echo "[$timestamp] Log entry #$counter from writer" >> /data/shared.log
+            
+            echo "Written entry #$counter"
+            sleep 3
+          done
+
+      # Mount the emptyDir volume
+      volumeMounts:
+        - name: shared-data # Must match volumes[].name
+          mountPath: /data # Path inside container
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+    # ---------------------------------------------------------------------------
+    # Container 2: Reader - reads and displays logs
+    # ---------------------------------------------------------------------------
+    - name: reader
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          # Wait for file to be created
+          echo "Waiting for log file..."
+          while [ ! -f /data/shared.log ]; do
+            sleep 1
+          done
+
+          echo "Log file found, tailing..."
+          # Continuously read new entries
+          tail -f /data/shared.log
+
+      volumeMounts:
+        - name: shared-data
+          mountPath: /data # Same volume, same path
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # Volumes definition
+  # ---------------------------------------------------------------------------
+  volumes:
+    - name: shared-data
+      emptyDir: {} # Empty config = disk-backed, no size limit
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # Watch the reader container output
+# kubectl logs emptydir-demo -c reader -f
+# # You should see log entries appearing every 3 seconds
+#
+# # Check that both containers see the same data
+# kubectl exec emptydir-demo -c writer -- cat /data/shared.log
+# kubectl exec emptydir-demo -c reader -- cat /data/shared.log
+#
+# # Delete pod - data is LOST
+# kubectl delete pod emptydir-demo
+# kubectl apply -f <this-file>
+# kubectl exec emptydir-demo -c writer -- cat /data/shared.log
+# # File is empty/new - previous data gone!
+
+---
+# ============================================================================
+# EXAMPLE 2: emptyDir with Memory (tmpfs)
+# ============================================================================
+# Store data in RAM instead of disk - very fast but uses memory limit
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emptydir-memory-demo
+  labels:
+    example: emptydir-memory
+spec:
+  containers:
+    - name: cache-demo
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "RAM-backed emptyDir demo"
+
+          # Write test data
+          echo "This is stored in RAM!" > /cache/data.txt
+
+          # Show mount info
+          echo "=== Mount info ==="
+          df -h /cache
+
+          # Keep pod running
+          sleep infinity
+
+      volumeMounts:
+        - name: cache-volume
+          mountPath: /cache
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi # Includes memory for emptyDir!
+        limits:
+          memory: 256Mi
+
+  volumes:
+    - name: cache-volume
+      emptyDir:
+        # ---------------------------------------------------------------------------
+        # medium: Memory = Use RAM (tmpfs)
+        # ---------------------------------------------------------------------------
+        medium: Memory
+
+        # ---------------------------------------------------------------------------
+        # sizeLimit: Maximum size (uses pod's memory)
+        # ---------------------------------------------------------------------------
+        sizeLimit: 64Mi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # Check mount type
+# kubectl exec emptydir-memory-demo -- df -h /cache
+# # Shows tmpfs filesystem
+#
+# # Check data survives container restart (but not pod restart)
+# kubectl exec emptydir-memory-demo -- cat /cache/data.txt
+
+---
+# ============================================================================
+# EXAMPLE 3: hostPath - Access Node's Filesystem
+# ============================================================================
+# WARNING: hostPath is a security risk - use with caution!
+# Use cases: DaemonSets for log collection, accessing host resources
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-demo
+  labels:
+    example: hostpath
+spec:
+  containers:
+    - name: log-reader
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== Host filesystem access demo ==="
+
+          echo "=== /var/log contents ==="
+          ls -la /host-logs/
+
+          echo ""
+          echo "=== Reading syslog (if exists) ==="
+          head -20 /host-logs/syslog 2>/dev/null || echo "No syslog file"
+
+          echo ""
+          echo "=== Reading messages (if exists) ==="
+          head -20 /host-logs/messages 2>/dev/null || echo "No messages file"
+
+          # Keep pod running
+          sleep infinity
+
+      volumeMounts:
+        - name: host-logs
+          mountPath: /host-logs
+          readOnly: true # Read-only for safety!
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: host-logs
+      hostPath:
+        # ---------------------------------------------------------------------------
+        # path: Directory on the HOST node
+        # ---------------------------------------------------------------------------
+        path: /var/log
+
+        # ---------------------------------------------------------------------------
+        # type: Validation
+        # - Directory: Must exist as directory
+        # - DirectoryOrCreate: Create if missing
+        # - File: Must exist as file
+        # - FileOrCreate: Create file if missing
+        # - Socket: Must be UNIX socket
+        # ---------------------------------------------------------------------------
+        type: Directory
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # See host's log files from inside container
+# kubectl exec hostpath-demo -- ls -la /host-logs/
+#
+# # Read host's logs
+# kubectl exec hostpath-demo -- cat /host-logs/syslog | head -20
+
+---
+# ============================================================================
+# EXAMPLE 4: hostPath - DirectoryOrCreate
+# ============================================================================
+# Automatically creates directory on host if it doesn't exist
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-create-demo
+  labels:
+    example: hostpath-create
+spec:
+  containers:
+    - name: writer
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "Writing to host filesystem..."
+
+          # Create file on host's filesystem
+          echo "Created at $(date)" > /host-data/created.txt
+
+          ls -la /host-data/
+          cat /host-data/created.txt
+
+          sleep infinity
+
+      volumeMounts:
+        - name: host-data
+          mountPath: /host-data
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: host-data
+      hostPath:
+        path: /tmp/k8s-demo-data # Will be created if missing
+        type: DirectoryOrCreate
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # Check file was created
+# kubectl exec hostpath-create-demo -- cat /host-data/created.txt
+#
+# # The file persists on the node!
+# # If you SSH to node: cat /tmp/k8s-demo-data/created.txt
+
+---
+# ============================================================================
+# EXAMPLE 5: ConfigMap as Volume
+# ============================================================================
+# Mount ConfigMap data as files
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Each key becomes a file
+  database.conf: |
+    # Database Configuration
+    host=postgres.default.svc.cluster.local
+    port=5432
+    database=myapp
+    pool_size=10
+
+  cache.conf: |
+    # Cache Configuration
+    redis_host=redis.default.svc.cluster.local
+    redis_port=6379
+    ttl=3600
+
+  app.properties: |
+    app.name=MyApp
+    app.version=1.0.0
+    app.environment=production
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-volume-demo
+  labels:
+    example: configmap-volume
+spec:
+  containers:
+    - name: app
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== ConfigMap mounted as files ==="
+
+          echo "=== Directory listing ==="
+          ls -la /etc/config/
+
+          echo ""
+          echo "=== database.conf ==="
+          cat /etc/config/database.conf
+
+          echo ""
+          echo "=== cache.conf ==="
+          cat /etc/config/cache.conf
+
+          echo ""
+          echo "=== app.properties ==="
+          cat /etc/config/app.properties
+
+          sleep infinity
+
+      volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: config
+      configMap:
+        name: app-config
+        # Optional: Set file permissions
+        defaultMode: 0644
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # See config files
+# kubectl exec configmap-volume-demo -- ls -la /etc/config/
+# kubectl exec configmap-volume-demo -- cat /etc/config/database.conf
+#
+# # Update ConfigMap and see changes (may take up to 1 minute)
+# kubectl edit configmap app-config
+
+---
+# ============================================================================
+# EXAMPLE 6: ConfigMap - Mount Specific Keys
+# ============================================================================
+# Mount only selected keys from ConfigMap
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-items-demo
+  labels:
+    example: configmap-items
+spec:
+  containers:
+    - name: app
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== Only selected ConfigMap keys ==="
+          ls -la /etc/config/
+
+          echo ""
+          echo "=== db.conf (was database.conf) ==="
+          cat /etc/config/db.conf
+
+          sleep infinity
+
+      volumeMounts:
+        - name: config
+          mountPath: /etc/config
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: config
+      configMap:
+        name: app-config
+        # ---------------------------------------------------------------------------
+        # items: Mount specific keys only
+        # ---------------------------------------------------------------------------
+        items:
+          - key: database.conf # Key in ConfigMap
+            path: db.conf # Filename in volume (renamed!)
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # Only db.conf exists (renamed from database.conf)
+# kubectl exec configmap-items-demo -- ls -la /etc/config/
+# kubectl exec configmap-items-demo -- cat /etc/config/db.conf
+
+---
+# ============================================================================
+# EXAMPLE 7: Secret as Volume
+# ============================================================================
+# Mount Secret data as files (automatically decoded from base64)
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+type: Opaque
+stringData: # Use stringData for plain text
+  db-password: "SuperSecretP@ssw0rd!"
+  api-key: "sk-abc123xyz789"
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIICpDCCAYwCCQDU+pQ+sampleCert...
+    -----END CERTIFICATE-----
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-volume-demo
+  labels:
+    example: secret-volume
+spec:
+  containers:
+    - name: app
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== Secret mounted as files ==="
+
+          echo "=== Directory listing (with permissions) ==="
+          ls -la /etc/secrets/
+
+          echo ""
+          echo "=== db-password ==="
+          cat /etc/secrets/db-password
+
+          echo ""
+          echo "=== api-key ==="
+          cat /etc/secrets/api-key
+
+          sleep infinity
+
+      volumeMounts:
+        - name: secrets
+          mountPath: /etc/secrets
+          readOnly: true # Always mount secrets as read-only!
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: secrets
+      secret:
+        secretName: app-secrets
+        # ---------------------------------------------------------------------------
+        # defaultMode: File permissions (octal)
+        # 0400 = read-only by owner (most restrictive)
+        # ---------------------------------------------------------------------------
+        defaultMode: 0400
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # See secret files
+# kubectl exec secret-volume-demo -- ls -la /etc/secrets/
+# # Note: Files have restrictive permissions (0400)
+#
+# # Read secrets
+# kubectl exec secret-volume-demo -- cat /etc/secrets/db-password
+
+---
+# ============================================================================
+# EXAMPLE 8: Projected Volume (Multiple Sources)
+# ============================================================================
+# Combine ConfigMap, Secret, and Downward API into one mount
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: projected-volume-demo
+  labels:
+    example: projected-volume
+spec:
+  serviceAccountName: default
+  containers:
+    - name: app
+      image: busybox:1.35
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== Projected volume (multiple sources) ==="
+
+          echo "=== All files ==="
+          ls -la /etc/all/
+
+          echo ""
+          echo "=== From ConfigMap ==="
+          cat /etc/all/database.conf
+
+          echo ""
+          echo "=== From Secret ==="
+          cat /etc/all/password
+
+          echo ""
+          echo "=== From Downward API (pod info) ==="
+          echo "Pod Name: $(cat /etc/all/podname)"
+          echo "Namespace: $(cat /etc/all/namespace)"
+          echo "Pod IP: $(cat /etc/all/podip)"
+
+          echo ""
+          echo "=== From ServiceAccount ==="
+          echo "Token (first 50 chars): $(head -c 50 /etc/all/token)..."
+
+          sleep infinity
+
+      volumeMounts:
+        - name: all-in-one
+          mountPath: /etc/all
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+
+  volumes:
+    - name: all-in-one
+      projected:
+        sources:
+          # ---------------------------------------------------------------------------
+          # Source 1: ConfigMap
+          # ---------------------------------------------------------------------------
+          - configMap:
+              name: app-config
+              items:
+                - key: database.conf
+                  path: database.conf
+
+          # ---------------------------------------------------------------------------
+          # Source 2: Secret
+          # ---------------------------------------------------------------------------
+          - secret:
+              name: app-secrets
+              items:
+                - key: db-password
+                  path: password
+
+          # ---------------------------------------------------------------------------
+          # Source 3: Downward API (pod metadata)
+          # ---------------------------------------------------------------------------
+          - downwardAPI:
+              items:
+                - path: podname
+                  fieldRef:
+                    fieldPath: metadata.name
+                - path: namespace
+                  fieldRef:
+                    fieldPath: metadata.namespace
+                - path: podip
+                  fieldRef:
+                    fieldPath: status.podIP
+
+          # ---------------------------------------------------------------------------
+          # Source 4: ServiceAccount Token
+          # ---------------------------------------------------------------------------
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+              audience: api
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # See all files from different sources
+# kubectl exec projected-volume-demo -- ls -la /etc/all/
+#
+# # Read different types of data
+# kubectl exec projected-volume-demo -- cat /etc/all/podname
+# kubectl exec projected-volume-demo -- cat /etc/all/password
+
+---
+# ============================================================================
+# EXAMPLE 9: SubPath - Mount Single File Without Overwriting Directory
+# ============================================================================
+# Mount a single file from volume without replacing entire directory
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-custom-config
+data:
+  custom.conf: |
+    # Custom nginx location
+    location /health {
+        return 200 'OK';
+        add_header Content-Type text/plain;
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: subpath-demo
+  labels:
+    example: subpath
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+
+      volumeMounts:
+        # ---------------------------------------------------------------------------
+        # subPath: Mount single file, don't replace directory
+        # Without subPath, entire /etc/nginx/conf.d/ would be replaced!
+        # ---------------------------------------------------------------------------
+        - name: config
+          mountPath: /etc/nginx/conf.d/custom.conf # Target file path
+          subPath: custom.conf # Key from ConfigMap
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+
+  volumes:
+    - name: config
+      configMap:
+        name: nginx-custom-config
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-file>
+#
+# # Check that other config files still exist
+# kubectl exec subpath-demo -- ls -la /etc/nginx/conf.d/
+# # Should see: default.conf AND custom.conf
+#
+# # Without subPath, only the ConfigMap file would exist!
+
+# ============================================================================
+# CLEANUP
+# ============================================================================
+#
+# kubectl delete -f 01-volumes-examples.yaml
+# kubectl delete configmap app-config nginx-custom-config
+# kubectl delete secret app-secrets
+#
+# ============================================================================

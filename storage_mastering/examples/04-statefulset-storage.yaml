@@ -1,0 +1,751 @@
+# ============================================================================
+# STATEFULSET WITH STORAGE - Complete Examples
+# ============================================================================
+# StatefulSets are designed for stateful applications that need:
+# - Stable network identity
+# - Persistent storage per pod
+# - Ordered deployment and scaling
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f 04-statefulset-storage.yaml
+#
+# 2. Wait for pods:
+#    kubectl wait --for=condition=ready pod --all --timeout=120s
+#
+# 3. Test persistence (see individual sections)
+#
+# 4. Cleanup:
+#    kubectl delete -f 04-statefulset-storage.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# EXAMPLE 1: Basic StatefulSet with VolumeClaimTemplate
+# ============================================================================
+# Each pod gets its own PVC that persists across restarts
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: basic-stateful-svc
+  labels:
+    app: basic-stateful
+    example: basic
+spec:
+  # ---------------------------------------------------------------------------
+  # clusterIP: None = Headless service
+  # Required for StatefulSet! Creates DNS records per pod.
+  # ---------------------------------------------------------------------------
+  clusterIP: None
+
+  selector:
+    app: basic-stateful
+
+  ports:
+    - port: 80
+      name: web
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: basic-stateful
+  labels:
+    example: basic
+spec:
+  # ---------------------------------------------------------------------------
+  # serviceName: Must match headless service name
+  # ---------------------------------------------------------------------------
+  serviceName: basic-stateful-svc
+
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: basic-stateful
+
+  template:
+    metadata:
+      labels:
+        app: basic-stateful
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Show pod identity
+              echo "Pod: $(hostname)"
+
+              # Initialize counter if not exists
+              if [ ! -f /data/counter.txt ]; then
+                echo 0 > /data/counter.txt
+              fi
+
+              # Increment and show
+              counter=$(cat /data/counter.txt)
+              counter=$((counter + 1))
+              echo $counter > /data/counter.txt
+              echo "Counter: $counter"
+
+              sleep infinity
+
+          ports:
+            - containerPort: 80
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # volumeClaimTemplates: Auto-create PVC for each pod
+  # ---------------------------------------------------------------------------
+  volumeClaimTemplates:
+    - metadata:
+        name: data # Volume name (matches volumeMounts)
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Mi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Wait for all pods
+# kubectl wait --for=condition=ready pod -l app=basic-stateful --timeout=60s
+#
+# # Check pod names - they're ordered!
+# kubectl get pods -l app=basic-stateful
+# # NAME              READY   STATUS
+# # basic-stateful-0  1/1     Running
+# # basic-stateful-1  1/1     Running
+# # basic-stateful-2  1/1     Running
+#
+# # Check PVCs - one per pod!
+# kubectl get pvc -l app=basic-stateful
+# # data-basic-stateful-0
+# # data-basic-stateful-1
+# # data-basic-stateful-2
+#
+# # Each pod has its own persistent storage
+# kubectl exec basic-stateful-0 -- cat /data/counter.txt
+# kubectl exec basic-stateful-1 -- cat /data/counter.txt
+#
+# # Delete a pod - it comes back with SAME data
+# kubectl delete pod basic-stateful-0
+# kubectl wait --for=condition=ready pod/basic-stateful-0 --timeout=60s
+# kubectl exec basic-stateful-0 -- cat /data/counter.txt
+# # Counter increased, not reset!
+
+---
+# ============================================================================
+# EXAMPLE 2: PostgreSQL StatefulSet
+# ============================================================================
+# Real-world database deployment with persistent storage
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  labels:
+    example: postgres
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "supersecret123"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless
+  labels:
+    app: postgres
+    example: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      name: postgres
+---
+# Regular service for application access
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    example: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      name: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    example: postgres
+spec:
+  serviceName: postgres-headless
+  replicas: 1 # Single instance for demo
+
+  selector:
+    matchLabels:
+      app: postgres
+
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+
+          ports:
+            - containerPort: 5432
+
+          # ---------------------------------------------------------------------------
+          # Environment from Secret
+          # ---------------------------------------------------------------------------
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+
+          # ---------------------------------------------------------------------------
+          # Mount persistent storage at PostgreSQL data directory
+          # ---------------------------------------------------------------------------
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata # Use subdir to avoid "lost+found" issue
+
+          # ---------------------------------------------------------------------------
+          # Health checks
+          # ---------------------------------------------------------------------------
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Wait for postgres
+# kubectl wait --for=condition=ready pod/postgres-0 --timeout=120s
+#
+# # Connect and create table
+# kubectl exec -it postgres-0 -- psql -U postgres -c "
+#   CREATE TABLE test (id SERIAL, data TEXT);
+#   INSERT INTO test (data) VALUES ('persistent!');
+#   SELECT * FROM test;
+# "
+#
+# # Delete pod
+# kubectl delete pod postgres-0
+#
+# # Wait for new pod
+# kubectl wait --for=condition=ready pod/postgres-0 --timeout=120s
+#
+# # Data is still there!
+# kubectl exec -it postgres-0 -- psql -U postgres -c "SELECT * FROM test;"
+
+---
+# ============================================================================
+# EXAMPLE 3: Redis Cluster with Storage
+# ============================================================================
+# Multiple Redis instances, each with own storage
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  labels:
+    example: redis
+data:
+  redis.conf: |
+    # Redis configuration
+    appendonly yes
+    appendfsync everysec
+    dir /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  labels:
+    app: redis
+    example: redis
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      name: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    example: redis
+spec:
+  serviceName: redis-headless
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: redis
+
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+
+          command: ["redis-server"]
+          args: ["/etc/redis/redis.conf"]
+
+          ports:
+            - containerPort: 6379
+
+          volumeMounts:
+            # Persistent data
+            - name: redis-data
+              mountPath: /data
+            # Config from ConfigMap
+            - name: config
+              mountPath: /etc/redis
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+
+      volumes:
+        - name: config
+          configMap:
+            name: redis-config
+
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Wait for redis pods
+# kubectl wait --for=condition=ready pod -l app=redis --timeout=60s
+#
+# # Write to redis-0
+# kubectl exec redis-0 -- redis-cli SET mykey "persistent value"
+#
+# # Read from redis-0
+# kubectl exec redis-0 -- redis-cli GET mykey
+#
+# # Delete redis-0
+# kubectl delete pod redis-0
+#
+# # Wait for restart
+# kubectl wait --for=condition=ready pod/redis-0 --timeout=60s
+#
+# # Data persisted!
+# kubectl exec redis-0 -- redis-cli GET mykey
+
+---
+# ============================================================================
+# EXAMPLE 4: StatefulSet with Multiple Volumes
+# ============================================================================
+# Pod with separate volumes for data and logs
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-vol-svc
+  labels:
+    example: multi-volume
+spec:
+  clusterIP: None
+  selector:
+    app: multi-vol
+  ports:
+    - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: multi-vol
+  labels:
+    example: multi-volume
+spec:
+  serviceName: multi-vol-svc
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: multi-vol
+
+  template:
+    metadata:
+      labels:
+        app: multi-vol
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Starting app on $(hostname)"
+
+              # Write to data volume
+              echo "Data: $(date)" >> /data/app-data.txt
+
+              # Write to log volume
+              echo "$(date) App started" >> /logs/app.log
+
+              # Show both
+              echo "=== Data ===" && cat /data/app-data.txt
+              echo "=== Logs ===" && cat /logs/app.log
+
+              sleep infinity
+
+          volumeMounts:
+            # Data volume - for application data
+            - name: data
+              mountPath: /data
+            # Log volume - for logs (could be different storage tier)
+            - name: logs
+              mountPath: /logs
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+
+  # ---------------------------------------------------------------------------
+  # Multiple volumeClaimTemplates
+  # ---------------------------------------------------------------------------
+  volumeClaimTemplates:
+    # Volume 1: Data (fast storage)
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # storageClassName: fast     # Could use different tier
+        resources:
+          requests:
+            storage: 1Gi
+
+    # Volume 2: Logs (standard storage)
+    - metadata:
+        name: logs
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # storageClassName: standard # Could use different tier
+        resources:
+          requests:
+            storage: 500Mi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check PVCs - 2 per pod!
+# kubectl get pvc -l app=multi-vol
+# # data-multi-vol-0
+# # data-multi-vol-1
+# # logs-multi-vol-0
+# # logs-multi-vol-1
+#
+# # Verify both volumes
+# kubectl exec multi-vol-0 -- cat /data/app-data.txt
+# kubectl exec multi-vol-0 -- cat /logs/app.log
+
+---
+# ============================================================================
+# EXAMPLE 5: StatefulSet DNS Demo
+# ============================================================================
+# Shows stable network identity with DNS
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-demo-svc
+  labels:
+    example: dns-demo
+spec:
+  clusterIP: None
+  selector:
+    app: dns-demo
+  ports:
+    - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dns-demo
+  labels:
+    example: dns-demo
+spec:
+  serviceName: dns-demo-svc
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: dns-demo
+
+  template:
+    metadata:
+      labels:
+        app: dns-demo
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Pod: $(hostname)"
+              echo "FQDN: $(hostname).dns-demo-svc.default.svc.cluster.local"
+
+              # Save identity to persistent storage
+              echo "$(hostname)" > /data/identity.txt
+
+              # Show peers we can reach
+              echo "=== Resolving peer DNS names ==="
+              for i in 0 1 2; do
+                nslookup dns-demo-$i.dns-demo-svc 2>/dev/null && echo "dns-demo-$i: reachable" || echo "dns-demo-$i: not yet"
+              done
+
+              sleep infinity
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Mi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Wait for pods
+# kubectl wait --for=condition=ready pod -l app=dns-demo --timeout=60s
+#
+# # Test DNS resolution
+# kubectl exec dns-demo-0 -- nslookup dns-demo-1.dns-demo-svc
+# # Returns IP of dns-demo-1
+#
+# # Test full FQDN
+# kubectl exec dns-demo-0 -- nslookup dns-demo-2.dns-demo-svc.default.svc.cluster.local
+#
+# # Each pod has stable DNS name!
+
+---
+# ============================================================================
+# EXAMPLE 6: StatefulSet with Init Container
+# ============================================================================
+# Initialize storage before main container starts
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: init-demo-svc
+  labels:
+    example: init-demo
+spec:
+  clusterIP: None
+  selector:
+    app: init-demo
+  ports:
+    - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: init-demo
+  labels:
+    example: init-demo
+spec:
+  serviceName: init-demo-svc
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: init-demo
+
+  template:
+    metadata:
+      labels:
+        app: init-demo
+    spec:
+      # ---------------------------------------------------------------------------
+      # Init container: Initialize storage
+      # ---------------------------------------------------------------------------
+      initContainers:
+        - name: init-data
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Initializing storage for $(hostname)..."
+
+              # Only initialize if empty
+              if [ ! -f /data/initialized ]; then
+                echo "First time setup!"
+                
+                # Create directory structure
+                mkdir -p /data/config /data/cache /data/logs
+                
+                # Set permissions
+                chmod 755 /data/*
+                
+                # Write initial config
+                echo "pod=$(hostname)" > /data/config/identity.conf
+                echo "initialized=$(date)" > /data/initialized
+                
+                echo "Initialization complete!"
+              else
+                echo "Already initialized, skipping..."
+              fi
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+      containers:
+        - name: app
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Main container starting..."
+              echo "=== Directory structure ==="
+              ls -la /data/
+              echo "=== Config ==="
+              cat /data/config/identity.conf
+              sleep infinity
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Mi
+# HOW TO TEST:
+# ------------
+# kubectl apply -f <this-section>
+#
+# # Check logs - see init container output
+# kubectl logs init-demo-0 -c init-data
+#
+# # Check main container sees initialized data
+# kubectl exec init-demo-0 -- cat /data/initialized
+# kubectl exec init-demo-0 -- cat /data/config/identity.conf
+#
+# # Delete and recreate - init container skips!
+# kubectl delete pod init-demo-0
+# kubectl wait --for=condition=ready pod/init-demo-0 --timeout=60s
+# kubectl logs init-demo-0 -c init-data
+# # "Already initialized, skipping..."
+
+# ============================================================================
+# CLEANUP
+# ============================================================================
+#
+# # Delete StatefulSets and services
+# kubectl delete -f 04-statefulset-storage.yaml
+#
+# # IMPORTANT: PVCs are NOT deleted with StatefulSet!
+# kubectl get pvc
+# kubectl delete pvc -l app=basic-stateful
+# kubectl delete pvc -l app=postgres
+# kubectl delete pvc -l app=redis
+# kubectl delete pvc -l app=multi-vol
+# kubectl delete pvc -l app=dns-demo
+# kubectl delete pvc -l app=init-demo
+#
+# # Or delete all PVCs
+# kubectl delete pvc --all
+#
+# ============================================================================

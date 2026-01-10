@@ -249,3 +249,354 @@ kubectl get events --sort-by='.lastTimestamp'
 
 - [init-containers-demo.yaml](init-containers-demo.yaml) - Full working example
 - [daemonset-simple.yaml](daemonset-simple.yaml) - DaemonSet example
+
+---
+
+## Deep Dive: What Happens When You Run `kubectl apply`?
+
+When you execute `kubectl apply -f init-containers-demo.yaml`, a complex orchestration happens behind the scenes.
+
+### Complete Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 User (kubectl)
+    participant API as 🌐 API Server
+    participant ETCD as 💾 etcd
+    participant Scheduler as 📅 Scheduler
+    participant Kubelet as 🖥️ Kubelet (Node)
+    participant CRI as 🐳 Container Runtime
+    
+    rect rgb(68, 71, 90)
+        Note over User,API: Step 1: Submit Pod Definition
+        User->>API: kubectl apply -f init-containers-demo.yaml
+        API->>API: Validate YAML syntax
+        API->>API: Authenticate & Authorize
+        API->>API: Admission Controllers
+        API->>ETCD: Store Pod definition
+        ETCD-->>API: Confirmed
+        API-->>User: pod/init-demo created
+    end
+    
+    rect rgb(98, 114, 164)
+        Note over API,Scheduler: Step 2: Schedule Pod to Node
+        API->>Scheduler: New pod needs scheduling
+        Scheduler->>Scheduler: Find suitable node
+        Scheduler->>API: Bind pod to node "minikube"
+        API->>ETCD: Update pod.spec.nodeName
+    end
+    
+    rect rgb(189, 147, 249)
+        Note over API,CRI: Step 3: Kubelet Runs Init Containers
+        Kubelet->>API: Watch for pods on my node
+        API-->>Kubelet: Pod "init-demo" assigned to you
+        Kubelet->>CRI: Pull image busybox:1.35
+        CRI-->>Kubelet: Image ready
+        Kubelet->>CRI: Start init-1 (wait-for-db)
+        CRI-->>Kubelet: Container running
+        Note over Kubelet: Wait for init-1 to exit 0
+        Kubelet->>API: Update status: Init:0/4
+    end
+    
+    rect rgb(80, 250, 123)
+        Note over Kubelet,CRI: Step 4: Continue Init Containers
+        loop For each init container
+            Kubelet->>CRI: Start next init container
+            CRI-->>Kubelet: Container completed
+            Kubelet->>API: Update status: Init:N/4
+        end
+    end
+    
+    rect rgb(255, 121, 198)
+        Note over Kubelet,CRI: Step 5: Start Main Container
+        Kubelet->>CRI: Start main container (app)
+        CRI-->>Kubelet: Container running
+        Kubelet->>API: Update status: Running
+    end
+```
+
+---
+
+### Step-by-Step Breakdown
+
+#### 1️⃣ kubectl Sends Request to API Server
+
+```mermaid
+flowchart LR
+    subgraph Client["Your Machine"]
+        kubectl["kubectl apply -f init-demo.yaml"]
+    end
+    
+    subgraph Master["Control Plane"]
+        API["API Server<br/>:6443"]
+    end
+    
+    kubectl -->|"HTTPS POST<br/>/api/v1/namespaces/default/pods"| API
+    
+    style kubectl fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style API fill:#bd93f9,stroke:#ff79c6,color:#f8f8f2
+```
+
+**What happens:**
+1. kubectl reads your YAML file
+2. Converts to JSON
+3. Sends HTTPS POST request to API Server
+4. Includes your kubeconfig credentials
+
+```bash
+# You can see the raw API call:
+kubectl apply -f init-containers-demo.yaml -v=6
+```
+
+---
+
+#### 2️⃣ API Server Validates & Stores
+
+```mermaid
+flowchart TB
+    subgraph APIServer["API Server Processing"]
+        Auth["🔐 Authentication<br/>Who are you?"]
+        Authz["✅ Authorization<br/>Can you create pods?"]
+        Admission["🔍 Admission Controllers<br/>Mutate & Validate"]
+        Store["💾 Store in etcd"]
+    end
+    
+    Request["Pod YAML"] --> Auth
+    Auth --> Authz
+    Authz --> Admission
+    Admission --> Store
+    
+    style Auth fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
+    style Authz fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style Admission fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style Store fill:#8be9fd,stroke:#50fa7b,color:#282a36
+```
+
+**Validation includes:**
+- YAML syntax valid?
+- All required fields present?
+- Resource limits valid?
+- Image names valid?
+- Init container names unique?
+
+---
+
+#### 3️⃣ Scheduler Assigns Pod to Node
+
+```mermaid
+flowchart LR
+    subgraph Scheduler["Scheduler Decision"]
+        Filter["Filter Nodes<br/>Which can run this pod?"]
+        Score["Score Nodes<br/>Which is best?"]
+        Bind["Bind Pod<br/>Assign to node"]
+    end
+    
+    Pod["Pod<br/>(Pending)"] --> Filter
+    Filter --> Score
+    Score --> Bind
+    Bind --> Node["Node: minikube"]
+    
+    style Filter fill:#ff5555,stroke:#ff79c6,color:#f8f8f2
+    style Score fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style Bind fill:#50fa7b,stroke:#8be9fd,color:#282a36
+```
+
+**Scheduler checks:**
+- Node has enough CPU/memory?
+- Node matches nodeSelector?
+- Node tolerates pod's tolerations?
+- Pod fits resource requests?
+
+---
+
+#### 4️⃣ Kubelet Receives Pod & Runs Init Containers
+
+```mermaid
+flowchart TB
+    subgraph Kubelet["Kubelet on Node"]
+        Watch["Watch API Server"]
+        Sync["Sync Pod Spec"]
+        Pull["Pull Images"]
+        RunInit["Run Init Containers<br/>(one by one)"]
+        RunMain["Run Main Containers"]
+    end
+    
+    Watch --> Sync
+    Sync --> Pull
+    Pull --> RunInit
+    RunInit --> RunMain
+    
+    style Watch fill:#6272a4,stroke:#44475a,color:#f8f8f2
+    style RunInit fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style RunMain fill:#50fa7b,stroke:#8be9fd,color:#282a36
+```
+
+**For each init container:**
+1. Pull image (if not cached)
+2. Create container
+3. Start container
+4. Wait for exit code 0
+5. Move to next init container
+
+---
+
+#### 5️⃣ Container Runtime Interaction
+
+```mermaid
+flowchart LR
+    subgraph Kubelet["Kubelet"]
+        CRI["CRI Interface"]
+    end
+    
+    subgraph Runtime["Container Runtime"]
+        Containerd["containerd"]
+        Docker["Docker (deprecated)"]
+        CRI_O["CRI-O"]
+    end
+    
+    CRI --> Containerd
+    CRI -.-> Docker
+    CRI -.-> CRI_O
+    
+    Containerd --> Container["Container<br/>Running"]
+    
+    style CRI fill:#bd93f9,stroke:#ff79c6,color:#f8f8f2
+    style Containerd fill:#50fa7b,stroke:#8be9fd,color:#282a36
+```
+
+**Minikube uses containerd by default.**
+
+---
+
+### Timeline View
+
+```mermaid
+gantt
+    title Pod Lifecycle Timeline
+    dateFormat X
+    axisFormat %s
+    
+    section API
+    kubectl apply           :a1, 0, 1
+    API validates           :a2, 1, 2
+    Store in etcd           :a3, 2, 3
+    
+    section Scheduler
+    Find node               :s1, 3, 4
+    Bind to minikube        :s2, 4, 5
+    
+    section Kubelet
+    Pull busybox            :k1, 5, 7
+    Init 1 wait-for-db      :k2, 7, 12
+    Pull postgres           :k3, 12, 15
+    Init 2 check-db         :k4, 15, 18
+    Init 3 migration        :k5, 18, 21
+    Pull busybox            :k6, 21, 22
+    Init 4 config           :k7, 22, 24
+    Main container          :k8, 24, 30
+```
+
+---
+
+### Status Updates You'll See
+
+| Time | Status | What's Happening |
+|------|--------|------------------|
+| 0s | `Pending` | Pod created, waiting for scheduler |
+| 1s | `Pending` | Scheduler assigned to node |
+| 2s | `Init:0/4` | First init container starting |
+| 5s | `Init:0/4` | First init container running |
+| 10s | `Init:1/4` | Second init container starting |
+| 15s | `Init:2/4` | Third init container starting |
+| 20s | `Init:3/4` | Fourth init container starting |
+| 25s | `Running` | All init done, main container running |
+
+---
+
+### What Gets Stored in etcd?
+
+```yaml
+# Simplified view of pod in etcd
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-demo
+  namespace: default
+  uid: abc123-def456
+  creationTimestamp: "2026-01-10T12:30:00Z"
+spec:
+  nodeName: minikube    # Added by scheduler
+  initContainers: [...]
+  containers: [...]
+status:
+  phase: Running
+  initContainerStatuses:
+    - name: wait-for-db
+      state:
+        terminated:
+          exitCode: 0   # Success!
+    - name: check-db
+      state:
+        terminated:
+          exitCode: 0
+    # ... and so on
+  containerStatuses:
+    - name: app
+      state:
+        running:
+          startedAt: "2026-01-10T12:30:25Z"
+```
+
+---
+
+### Watch It Happen Live
+
+```bash
+# Terminal 1: Watch pod status
+kubectl get pods -w
+
+# Terminal 2: Watch events
+kubectl get events -w --field-selector involvedObject.name=init-demo
+
+# Terminal 3: Watch API server logs (if accessible)
+kubectl logs -n kube-system -l component=kube-apiserver -f
+```
+
+---
+
+### Key Components Involved
+
+| Component | Role | Location |
+|-----------|------|----------|
+| **kubectl** | CLI client, sends requests | Your machine |
+| **API Server** | REST API, validates, stores | Control plane |
+| **etcd** | Distributed key-value store | Control plane |
+| **Scheduler** | Assigns pods to nodes | Control plane |
+| **Kubelet** | Runs containers on node | Each node |
+| **Container Runtime** | Actually runs containers | Each node |
+
+---
+
+### Summary Flow
+
+```mermaid
+flowchart TB
+    A["1. kubectl apply"] --> B["2. API Server validates"]
+    B --> C["3. Stored in etcd"]
+    C --> D["4. Scheduler assigns node"]
+    D --> E["5. Kubelet pulls images"]
+    E --> F["6. Run init-1"]
+    F --> G["7. Run init-2"]
+    G --> H["8. Run init-3"]
+    H --> I["9. Run init-4"]
+    I --> J["10. Start main container"]
+    J --> K["11. Pod Running! ✅"]
+    
+    style A fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style K fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style F fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style G fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style H fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+    style I fill:#ffb86c,stroke:#f1fa8c,color:#282a36
+```
+

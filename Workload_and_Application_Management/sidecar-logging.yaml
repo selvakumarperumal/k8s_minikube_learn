@@ -1,0 +1,272 @@
+# ============================================================================
+# SIDECAR PATTERN - Log Shipping Example
+# ============================================================================
+# The Sidecar Pattern adds helper containers that run alongside the main app.
+#
+# This example demonstrates:
+# 1. Main app generates logs
+# 2. Log-shipper sidecar reads and ships logs
+# 3. Log-analyzer sidecar monitors for errors
+#
+# NEW in Kubernetes 1.28+: Native Sidecar Containers!
+# See the second example below for the modern approach.
+# ============================================================================
+
+# =============================================================================
+# EXAMPLE 1: Traditional Sidecar Pattern (works in all K8s versions)
+# =============================================================================
+# All containers in 'containers' section run in parallel
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sidecar-traditional
+  labels:
+    app: sidecar-demo
+    type: traditional
+spec:
+  # -------------------------------------------------------------------------
+  # SHARED VOLUME - Communication channel between containers
+  # -------------------------------------------------------------------------
+  volumes:
+    - name: shared-logs
+      emptyDir: {}
+
+  containers:
+    # -----------------------------------------------------------------------
+    # MAIN APPLICATION - Generates logs
+    # -----------------------------------------------------------------------
+    - name: app
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "Application starting..."
+          while true; do
+            # Generate application logs
+            echo "[$(date)] INFO: Processing request $RANDOM" >> /var/log/app.log
+            echo "[$(date)] WARN: Cache miss for key-$RANDOM" >> /var/log/app.log
+            # Occasionally generate error
+            if [ $((RANDOM % 5)) -eq 0 ]; then
+              echo "[$(date)] ERROR: Connection timeout!" >> /var/log/app.log
+            fi
+            sleep 2
+          done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    # -----------------------------------------------------------------------
+    # SIDECAR 1: Log Shipper - Ships logs to external service
+    # -----------------------------------------------------------------------
+    - name: log-shipper
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "Log shipper starting..."
+          # Wait for log file to exist
+          while [ ! -f /var/log/app.log ]; do
+            echo "Waiting for app.log..."
+            sleep 1
+          done
+          echo "Found app.log, starting to ship..."
+          # Ship logs (in real scenario: send to Elasticsearch, Splunk, etc.)
+          tail -f /var/log/app.log | while read line; do
+            echo "[SHIPPED] $line"
+            # In production:
+            # curl -X POST elasticsearch:9200/logs/_doc -d "$line"
+          done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+    # -----------------------------------------------------------------------
+    # SIDECAR 2: Log Analyzer - Monitors for errors
+    # -----------------------------------------------------------------------
+    - name: log-analyzer
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "Log analyzer starting..."
+          while [ ! -f /var/log/app.log ]; do
+            sleep 1
+          done
+          echo "Monitoring for errors..."
+          # Alert on errors/warnings
+          tail -f /var/log/app.log | while read line; do
+            if echo "$line" | grep -q "ERROR"; then
+              echo "[🚨 ALERT] $line"
+            elif echo "$line" | grep -q "WARN"; then
+              echo "[⚠️  WARN] $line"
+            fi
+          done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+---
+# =============================================================================
+# EXAMPLE 2: Native Sidecar Pattern (Kubernetes 1.28+)
+# =============================================================================
+# Native sidecars are defined in initContainers with restartPolicy: Always
+# Benefits:
+# - Sidecars start BEFORE main app
+# - Sidecars keep running (won't block main app startup)
+# - Proper startup/shutdown ordering
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sidecar-native
+  labels:
+    app: sidecar-demo
+    type: native
+spec:
+  volumes:
+    - name: shared-logs
+      emptyDir: {}
+
+  # -------------------------------------------------------------------------
+  # NATIVE SIDECARS - Start first, keep running
+  # -------------------------------------------------------------------------
+  initContainers:
+    # Sidecar 1: Log shipper (starts before main app)
+    - name: log-shipper
+      image: busybox:1.35
+      restartPolicy: Always # ← This makes it a NATIVE SIDECAR!
+      command:
+        - sh
+        - -c
+        - |
+          echo "Native sidecar: Log shipper starting..."
+          # Create log file so main app can write
+          touch /var/log/app.log
+          # Ship logs
+          tail -f /var/log/app.log | while read line; do
+            echo "[SHIPPED] $line"
+          done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+
+    # Sidecar 2: Log analyzer (starts before main app)
+    - name: log-analyzer
+      image: busybox:1.35
+      restartPolicy: Always # ← This makes it a NATIVE SIDECAR!
+      command:
+        - sh
+        - -c
+        - |
+          echo "Native sidecar: Log analyzer starting..."
+          tail -f /var/log/app.log | while read line; do
+            if echo "$line" | grep -q "ERROR\|WARN"; then
+              echo "[ALERT] $line"
+            fi
+          done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+
+  # -------------------------------------------------------------------------
+  # MAIN APPLICATION - Starts after sidecars are ready
+  # -------------------------------------------------------------------------
+  containers:
+    - name: app
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "Main application starting..."
+          echo "Sidecars are already running!"
+          while true; do
+            echo "[$(date)] INFO: Processing request $RANDOM" >> /var/log/app.log
+            if [ $((RANDOM % 5)) -eq 0 ]; then
+              echo "[$(date)] ERROR: Something went wrong!" >> /var/log/app.log
+            fi
+            sleep 2
+          done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+# ============================================================================
+# HOW TO USE
+# ============================================================================
+#
+# TRADITIONAL SIDECAR (All K8s versions):
+#   kubectl apply -f sidecar-logging.yaml
+#   kubectl get pod sidecar-traditional
+#
+#   # View main app logs
+#   kubectl logs sidecar-traditional -c app
+#
+#   # View sidecar logs
+#   kubectl logs sidecar-traditional -c log-shipper
+#   kubectl logs sidecar-traditional -c log-analyzer
+#
+# NATIVE SIDECAR (K8s 1.28+):
+#   kubectl apply -f sidecar-logging.yaml
+#   kubectl get pod sidecar-native
+#
+#   # View logs - same commands
+#   kubectl logs sidecar-native -c app
+#   kubectl logs sidecar-native -c log-shipper
+#
+# CLEANUP:
+#   kubectl delete pod sidecar-traditional sidecar-native
+#
+# ============================================================================
+# COMPARISON: Traditional vs Native Sidecars
+# ============================================================================
+#
+# | Feature                    | Traditional      | Native (1.28+)      |
+# |----------------------------|------------------|---------------------|
+# | Defined in                 | containers       | initContainers      |
+# | restartPolicy              | (not needed)     | Always              |
+# | Startup order              | All parallel     | Sidecars first      |
+# | Sidecar ready before app   | ❌ No            | ✅ Yes              |
+# | Graceful shutdown order    | ❌ No            | ✅ Yes (app first)  |
+# | K8s version required       | Any              | 1.28+               |
+#
+# ============================================================================

@@ -325,24 +325,74 @@ spec:
       # Setting it to Always makes it a NATIVE SIDECAR
       restartPolicy: Always
 
+      # -----------------------------------------------------------------------
+      # BASH SCRIPT EXPLANATION - WHY IT RUNS INFINITELY
+      # -----------------------------------------------------------------------
+      #
+      # Q: Does this script exit or run forever?
+      # A: It runs FOREVER because of `tail -f`
+      #
+      # HOW IT WORKS:
+      # -------------
+      # 1. touch /var/log/app.log
+      #    → Creates empty file if doesn't exist
+      #    → Unlike traditional sidecar, we create file FIRST
+      #    → Main app will append to this file later
+      #
+      # 2. tail -f /var/log/app.log
+      #    → -f means "follow" mode
+      #    → This command NEVER EXITS on its own!
+      #    → It blocks and waits for new lines forever
+      #    → Perfect for sidecar that needs to run continuously
+      #
+      # 3. | while read line; do ... done
+      #    → Pipe new lines to while loop
+      #    → Each new line triggers the loop body
+      #    → Loop keeps waiting for more lines (never exits)
+      #
+      # 4. [ -z "$line" ] && continue
+      #    → [ -z "$var" ] = true if variable is empty
+      #    → && = if true, run next command
+      #    → continue = skip to next iteration
+      #    → This skips empty lines
+      #
+      # LIFECYCLE:
+      # ----------
+      # Container starts → tail -f blocks waiting → main app writes logs
+      # → tail -f sees new lines → pipes to while loop → processes each line
+      # → continues waiting for more lines → runs until Pod is deleted
+      #
       command:
         - sh
         - -c
         - |
           echo "Native sidecar: Log shipper starting..."
 
-          # Create log file first - main app will append to it
-          # This ensures the file exists when main app starts
+          # Create log file FIRST (before main app starts)
+          # touch = create empty file if doesn't exist
+          # Unlike traditional sidecar, we create file proactively
           touch /var/log/app.log
 
           echo "Log file created, ready to ship..."
 
-          # Ship logs as they arrive
+          # tail -f = BLOCKING command that runs FOREVER
+          # It waits for new lines and never exits!
+          # This is what keeps the sidecar running
           tail -f /var/log/app.log | while read line; do
             # Skip empty lines
+            # [ -z "$line" ] = true if $line is empty
+            # && continue = if true, skip to next iteration
             [ -z "$line" ] && continue
+            
+            # Process non-empty lines
             echo "[SHIPPED] $line"
+            
+            # In production: send to Elasticsearch, Splunk, etc.
+            # curl -X POST http://elasticsearch:9200/logs/_doc -d "$line"
           done
+
+          # NOTE: We never reach here because tail -f runs forever!
+          echo "This line will never be printed!"
 
       volumeMounts:
         - name: shared-logs
@@ -361,19 +411,50 @@ spec:
 
       restartPolicy: Always # Makes it a native sidecar
 
+      # -----------------------------------------------------------------------
+      # BASH SCRIPT EXPLANATION - MONITORING LOOP
+      # -----------------------------------------------------------------------
+      #
+      # This also runs FOREVER because of tail -f
+      #
+      # PATTERN MATCHING:
+      # -----------------
+      # echo "$line" | grep -q "ERROR\|WARN"
+      #
+      # Breakdown:
+      #   echo "$line"     → Output the log line
+      #   |                → Pipe to grep
+      #   grep             → Search for pattern
+      #   -q               → Quiet mode (no output, just exit code)
+      #   "ERROR\|WARN"    → Pattern: ERROR OR WARN
+      #                      \| means OR in grep
+      #
+      # grep returns:
+      #   Exit code 0 (true)  → Pattern found
+      #   Exit code 1 (false) → Pattern not found
+      #
+      # if/fi checks the exit code of grep
+      #
       command:
         - sh
         - -c
         - |
           echo "Native sidecar: Log analyzer starting..."
 
-          # File already exists (created by log-shipper)
-          # Start monitoring immediately
+          # File already exists (created by log-shipper sidecar)
+          # No need to wait or check!
+
+          # tail -f runs FOREVER, keeping this sidecar alive
           tail -f /var/log/app.log | while read line; do
+            # Skip empty lines
             [ -z "$line" ] && continue
             
+            # Check if line contains ERROR or WARN
+            # grep -q = quiet (no output, just exit code)
+            # \| = OR in grep regex
             if echo "$line" | grep -q "ERROR\|WARN"; then
               echo "[ALERT] $line"
+              # In production: send to PagerDuty, Slack, etc.
             fi
           done
 

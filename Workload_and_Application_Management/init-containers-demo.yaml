@@ -1,0 +1,208 @@
+# ============================================================================
+# INIT CONTAINERS DEMO
+# ============================================================================
+# Init containers run BEFORE the main application container starts.
+# They run in order, one at a time, and must complete successfully.
+#
+# Use Cases:
+# - Wait for dependencies (databases, services)
+# - Run database migrations
+# - Download configuration files
+# - Set up permissions/directories
+# - Clone git repositories
+# ============================================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-demo
+  labels:
+    app: init-demo
+spec:
+  # ===========================================================================
+  # INIT CONTAINERS - Run first, in order, before main container
+  # ===========================================================================
+  initContainers:
+    # -------------------------------------------------------------------------
+    # INIT 1: Wait for database service to be discoverable
+    # -------------------------------------------------------------------------
+    - name: wait-for-db
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "Init 1: Waiting for database service..."
+          until nslookup postgres-service.default.svc.cluster.local; do
+            echo "Database not ready, waiting 2 seconds..."
+            sleep 2
+          done
+          echo "Init 1: Database service is ready!"
+
+    # -------------------------------------------------------------------------
+    # INIT 2: Check database is accepting connections
+    # -------------------------------------------------------------------------
+    - name: check-db
+      image: postgres:13-alpine
+      command:
+        - sh
+        - -c
+        - |
+          echo "Init 2: Checking database connection..."
+          until pg_isready -h postgres-service -U admin; do
+            echo "Database not accepting connections, waiting..."
+            sleep 2
+          done
+          echo "Init 2: Database is accepting connections!"
+      env:
+        - name: PGPASSWORD
+          value: "password"
+
+    # -------------------------------------------------------------------------
+    # INIT 3: Run database migration
+    # -------------------------------------------------------------------------
+    - name: run-migration
+      image: postgres:13-alpine
+      command:
+        - sh
+        - -c
+        - |
+          echo "Init 3: Running database migration..."
+          psql -h postgres-service -U admin -d mydb -c "
+            CREATE TABLE IF NOT EXISTS migrations (
+              id SERIAL PRIMARY KEY,
+              version VARCHAR(50),
+              applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO migrations (version) VALUES ('v1.0.0');
+          "
+          echo "Init 3: Migration completed!"
+      env:
+        - name: PGPASSWORD
+          value: "password"
+
+    # -------------------------------------------------------------------------
+    # INIT 4: Download/generate configuration
+    # -------------------------------------------------------------------------
+    - name: download-config
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "Init 4: Downloading configuration..."
+          echo "api_key=secret123" > /config/app.conf
+          echo "db_host=postgres-service" >> /config/app.conf
+          echo "log_level=info" >> /config/app.conf
+          echo "Init 4: Configuration ready!"
+          cat /config/app.conf
+      volumeMounts:
+        - name: config-volume
+          mountPath: /config
+
+  # ===========================================================================
+  # MAIN CONTAINER - Starts ONLY after ALL init containers succeed
+  # ===========================================================================
+  containers:
+    - name: app
+      image: busybox:1.35
+      command:
+        - sh
+        - -c
+        - |
+          echo "=========================================="
+          echo "Main application starting..."
+          echo "=========================================="
+          echo ""
+          echo "Reading configuration:"
+          cat /config/app.conf
+          echo ""
+          echo "Application ready to serve traffic!"
+          echo "=========================================="
+          # Keep container running
+          while true; do
+            echo "[$(date)] Application running..."
+            sleep 60
+          done
+      volumeMounts:
+        - name: config-volume
+          mountPath: /config
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+  # ===========================================================================
+  # VOLUMES - Shared between init and main containers
+  # ===========================================================================
+  volumes:
+    - name: config-volume
+      emptyDir: {} # Empty directory, shared between containers
+
+  # Pod will restart if any init container fails
+  restartPolicy: Always
+# ============================================================================
+# HOW TO RUN (Standalone Demo - without actual database)
+# ============================================================================
+#
+# For a STANDALONE demo (init containers will keep waiting for postgres):
+#   kubectl apply -f init-containers-demo.yaml
+#   kubectl get pods -w   # Watch init containers run
+#   kubectl logs init-demo -c wait-for-db   # View init container logs
+#
+# The pod will be in "Init:0/4" state because there's no postgres-service.
+# This demonstrates how init containers wait for dependencies!
+#
+# ============================================================================
+# HOW TO RUN (With PostgreSQL)
+# ============================================================================
+#
+# STEP 1: Create a simple PostgreSQL deployment
+#
+#   kubectl run postgres --image=postgres:13-alpine \
+#     --env="POSTGRES_USER=admin" \
+#     --env="POSTGRES_PASSWORD=password" \
+#     --env="POSTGRES_DB=mydb" \
+#     --port=5432
+#
+# STEP 2: Expose PostgreSQL as a service
+#
+#   kubectl expose pod postgres --name=postgres-service --port=5432
+#
+# STEP 3: Apply this init containers demo
+#
+#   kubectl apply -f init-containers-demo.yaml
+#
+# STEP 4: Watch the init containers run
+#
+#   kubectl get pods -w
+#   # You'll see: Init:0/4 → Init:1/4 → Init:2/4 → Init:3/4 → Running
+#
+# STEP 5: View logs from each init container
+#
+#   kubectl logs init-demo -c wait-for-db
+#   kubectl logs init-demo -c check-db
+#   kubectl logs init-demo -c run-migration
+#   kubectl logs init-demo -c download-config
+#   kubectl logs init-demo -c app   # Main container
+#
+# CLEANUP:
+#   kubectl delete pod init-demo
+#   kubectl delete pod postgres
+#   kubectl delete svc postgres-service
+#
+# ============================================================================
+# INIT CONTAINER RULES
+# ============================================================================
+#
+# 1. Init containers run ONE AT A TIME, in order
+# 2. Each must complete successfully before the next starts
+# 3. If any init container fails, pod restarts (unless restartPolicy: Never)
+# 4. Init containers CAN have different images than main container
+# 5. Init containers DON'T have readiness/liveness probes
+# 6. Init containers CAN share volumes with main containers
+#
+# ============================================================================

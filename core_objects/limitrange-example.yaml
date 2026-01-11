@@ -50,7 +50,7 @@ metadata:
 #  │  │ Min         │   50m       │   64Mi      │     -       │             │
 #  │  │ Max         │   2         │   2Gi       │     -       │             │
 #  │  │ Default Req │   100m      │   128Mi     │     -       │             │
-#  │  │ Default Lim │   500m      │   512Mi     │     -       │             │
+#  │  │ Default Lim │   400m      │   512Mi     │     -       │             │
 #  │  │ Max Ratio   │   4x        │   4x        │ Limit/Req   │             │
 #  │  └─────────────┴─────────────┴─────────────┴─────────────┘             │
 #  │                                                                          │
@@ -80,7 +80,7 @@ spec:
       # -----------------------------------------------------------------------
       # Containers without explicit limits get these values automatically
       default:
-        cpu: 500m # Max CPU container can use
+        cpu: 400m # Max CPU container can use (4x request to respect ratio)
         memory: 512Mi # Max Memory container can use
 
       # -----------------------------------------------------------------------
@@ -110,11 +110,48 @@ spec:
       # -----------------------------------------------------------------------
       # maxLimitRequestRatio: Maximum ratio of Limit to Request
       # -----------------------------------------------------------------------
-      # Prevents overcommitment - limits can be at most 4x requests
-      # Example: If request is 100m CPU, limit can be max 400m CPU
+      #
+      # WHAT IS THIS?
+      # This controls how much "burst" capacity a container can have.
+      # The ratio = limit ÷ request
+      #
+      # WHY USE IT?
+      # Prevents overcommitment. If request is 100m but limit is 2000m,
+      # the scheduler thinks it needs 100m, but the container can use 2000m!
+      # This can starve other pods when many containers burst simultaneously.
+      #
+      # HOW IT WORKS:
+      # ┌───────────────────────────────────────────────────────────────────────┐
+      # │                    maxLimitRequestRatio: 4                            │
+      # │                                                                       │
+      # │  Formula:  limit ÷ request ≤ maxLimitRequestRatio                    │
+      # │                                                                       │
+      # │  ┌─────────────────────────────────────────────────────────────────┐ │
+      # │  │ VALID Examples (ratio ≤ 4):                                     │ │
+      # │  │                                                                 │ │
+      # │  │   request: 100m   limit: 400m   → 400÷100 = 4.0  ✓ Accepted    │ │
+      # │  │   request: 200m   limit: 400m   → 400÷200 = 2.0  ✓ Accepted    │ │
+      # │  │   request: 100m   limit: 100m   → 100÷100 = 1.0  ✓ Accepted    │ │
+      # │  │   request: 250m   limit: 1000m  → 1000÷250 = 4.0 ✓ Accepted    │ │
+      # │  └─────────────────────────────────────────────────────────────────┘ │
+      # │                                                                       │
+      # │  ┌─────────────────────────────────────────────────────────────────┐ │
+      # │  │ INVALID Examples (ratio > 4):                                   │ │
+      # │  │                                                                 │ │
+      # │  │   request: 100m   limit: 500m   → 500÷100 = 5.0  ✗ REJECTED   │ │
+      # │  │   request: 100m   limit: 1000m  → 1000÷100 = 10  ✗ REJECTED   │ │
+      # │  │   request: 50m    limit: 500m   → 500÷50 = 10    ✗ REJECTED   │ │
+      # │  └─────────────────────────────────────────────────────────────────┘ │
+      # │                                                                       │
+      # │  IMPORTANT: This also applies to DEFAULT values!                     │
+      # │  Our defaults:  request=100m, limit=400m  → 400÷100 = 4.0 ✓         │
+      # │  If we had:     request=100m, limit=500m  → 500÷100 = 5.0 ✗         │
+      # │                 ↑ This would reject pods with no resources!          │
+      # └───────────────────────────────────────────────────────────────────────┘
+      #
       maxLimitRequestRatio:
-        cpu: 4 # Limit can be max 4x request
-        memory: 4 # Limit can be max 4x request
+        cpu: 4 # Limit can be max 4x request (e.g., 100m request → max 400m limit)
+        memory: 4 # Limit can be max 4x request (e.g., 128Mi request → max 512Mi limit)
 
     # -------------------------------------------------------------------------
     # TYPE: Pod
@@ -131,7 +168,7 @@ spec:
 # ============================================================================
 # This pod doesn't specify any resources, so LimitRange applies defaults:
 # - requests: cpu=100m, memory=128Mi
-# - limits: cpu=500m, memory=512Mi
+# - limits: cpu=400m, memory=512Mi
 #
 #  Before LimitRange:          After LimitRange Applied:
 #  ┌───────────────┐           ┌─────────────────────────┐
@@ -143,7 +180,7 @@ spec:
 #  │               │           │         cpu: 100m       │
 #  │               │           │         memory: 128Mi   │
 #  │               │           │       limits:           │
-#  │               │           │         cpu: 500m       │
+#  │               │           │         cpu: 400m       │
 #  │               │           │         memory: 512Mi   │
 #  └───────────────┘           └─────────────────────────┘
 
@@ -170,7 +207,7 @@ spec:
 # # You'll see:
 # # resources:
 # #   limits:
-# #     cpu: 500m
+# #     cpu: 400m
 # #     memory: 512Mi
 # #   requests:
 # #     cpu: 100m
@@ -232,7 +269,7 @@ spec:
 # HOW TO TEST:
 # ------------
 # kubectl get pod partial-resources -n resource-constrained -o yaml | grep -A 10 resources
-# # Limits will be filled with defaults: cpu=500m, memory=512Mi
+# # Limits will be filled with defaults: cpu=400m, memory=512Mi
 
 ---
 # ============================================================================

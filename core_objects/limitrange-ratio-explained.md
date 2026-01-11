@@ -180,19 +180,107 @@ Ratio check: 400 ÷ 100 = 4.0  ← EXACTLY 4!  ✓ ACCEPTED!
 
 ---
 
-## Quick Reference Table
+## Real-World Examples
 
-| Resource Config | Request | Limit | Ratio | Result (if max=4) |
-|-----------------|---------|-------|-------|-------------------|
-| Example 1 | 100m | 100m | 1.0 | ✅ Accepted |
-| Example 2 | 100m | 200m | 2.0 | ✅ Accepted |
-| Example 3 | 100m | 400m | 4.0 | ✅ Accepted |
-| Example 4 | 100m | 401m | 4.01 | ❌ Rejected |
-| Example 5 | 100m | 500m | 5.0 | ❌ Rejected |
-| Example 6 | 200m | 500m | 2.5 | ✅ Accepted |
-| Example 7 | 50m | 500m | 10.0 | ❌ Rejected |
+### Example 1: Web Application (Light workload)
+```yaml
+resources:
+  requests:
+    cpu: 100m       # Need at least 0.1 CPU core
+  limits:
+    cpu: 400m       # Can burst to 0.4 CPU cores
+
+# Ratio: 400 ÷ 100 = 4.0  ✅ ACCEPTED (exactly at limit)
+```
+
+### Example 2: API Server (Medium workload)
+```yaml
+resources:
+  requests:
+    cpu: 250m       # Need at least 0.25 CPU core
+  limits:
+    cpu: 1000m      # Can burst to 1 full CPU core (1000m = 1 core)
+
+# Ratio: 1000 ÷ 250 = 4.0  ✅ ACCEPTED (exactly at limit)
+```
+
+### Example 3: Background Worker (High burst)
+```yaml
+resources:
+  requests:
+    cpu: 500m       # Need at least 0.5 CPU core
+  limits:
+    cpu: 2000m      # Can burst to 2 full CPU cores
+
+# Ratio: 2000 ÷ 500 = 4.0  ✅ ACCEPTED (exactly at limit)
+```
+
+### Example 4: Database (Predictable workload)
+```yaml
+resources:
+  requests:
+    cpu: 1000m      # Need at least 1 CPU core
+  limits:
+    cpu: 2000m      # Can burst to 2 CPU cores (max in LimitRange)
+
+# Ratio: 2000 ÷ 1000 = 2.0  ✅ ACCEPTED (well under limit)
+```
+
+### Example 5: Greedy Application (REJECTED!)
+```yaml
+resources:
+  requests:
+    cpu: 100m       # Claims to need only 0.1 core
+  limits:
+    cpu: 2000m      # Wants to burst to 2 full cores!
+
+# Ratio: 2000 ÷ 100 = 20.0  ❌ REJECTED! Ratio far exceeds 4!
+# This would let the pod "game" the scheduler
+```
 
 ---
+
+## Quick Reference Table
+
+| Use Case | Request | Limit | Ratio | Result (max=4) |
+|----------|---------|-------|-------|----------------|
+| Minimal pod | 50m | 200m | 4.0 | ✅ Accepted |
+| Light web app | 100m | 400m | 4.0 | ✅ Accepted |
+| API server | 250m | 1000m | 4.0 | ✅ Accepted |
+| Worker | 500m | 2000m | 4.0 | ✅ Accepted |
+| Database | 1000m | 2000m | 2.0 | ✅ Accepted |
+| Steady pod | 500m | 500m | 1.0 | ✅ Accepted |
+| **Greedy pod** | 100m | 500m | 5.0 | ❌ **Rejected** |
+| **Very greedy** | 100m | 1000m | 10.0 | ❌ **Rejected** |
+| **Extreme** | 50m | 2000m | 40.0 | ❌ **Rejected** |
+
+---
+
+## Memory Examples
+
+The same ratio applies to memory:
+
+```yaml
+resources:
+  requests:
+    memory: 128Mi    # Need at least 128 MiB
+  limits:
+    memory: 512Mi    # Can use up to 512 MiB
+
+# Ratio: 512 ÷ 128 = 4.0  ✅ ACCEPTED
+```
+
+```yaml
+resources:
+  requests:
+    memory: 256Mi    # Need at least 256 MiB
+  limits:
+    memory: 2Gi      # Can use up to 2 GiB (2048 MiB)
+
+# Ratio: 2048 ÷ 256 = 8.0  ❌ REJECTED! Exceeds 4!
+```
+
+
 
 ## How to Fix Ratio Violations
 

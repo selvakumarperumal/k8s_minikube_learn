@@ -1,0 +1,256 @@
+# ============================================================================
+# RESOURCEQUOTA - Limiting Total Resources in a Namespace
+# ============================================================================
+# ResourceQuota limits the TOTAL resources consumed by ALL pods in a namespace
+# Unlike LimitRange (per-pod limits), ResourceQuota is a namespace-wide budget
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f resourcequota-example.yaml
+#
+# 2. Check ResourceQuota:
+#    kubectl describe quota team-quota -n team-a
+#
+# 3. Test pods (see examples below)
+#
+# 4. Cleanup:
+#    kubectl delete namespace team-a
+#
+# ============================================================================
+
+---
+# ============================================================================
+# STEP 1: Create Namespace for Team A
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels:
+    team: team-a
+    purpose: resourcequota-demo
+
+---
+# ============================================================================
+# STEP 2: ResourceQuota Definition
+# ============================================================================
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                     ResourceQuota: team-quota                               │
+# ├─────────────────────────────────────────────────────────────────────────────┤
+# │                                                                              │
+# │  COMPUTE RESOURCES (Total for ALL pods in namespace):                       │
+# │  ┌───────────────────────┬─────────────────────────────────────────────┐   │
+# │  │ requests.cpu          │ 2 cores total for all pod requests          │   │
+# │  │ requests.memory       │ 4Gi total for all pod memory requests       │   │
+# │  │ limits.cpu            │ 4 cores total for all pod limits            │   │
+# │  │ limits.memory         │ 8Gi total for all pod memory limits         │   │
+# │  └───────────────────────┴─────────────────────────────────────────────┘   │
+# │                                                                              │
+# │  OBJECT COUNTS:                                                             │
+# │  ┌───────────────────────┬─────────────────────────────────────────────┐   │
+# │  │ pods                  │ Max 10 pods                                  │   │
+# │  │ services              │ Max 5 services                               │   │
+# │  │ persistentvolumeclaims│ Max 3 PVCs                                   │   │
+# │  │ configmaps            │ Max 10 ConfigMaps                            │   │
+# │  │ secrets               │ Max 10 Secrets                               │   │
+# │  └───────────────────────┴─────────────────────────────────────────────┘   │
+# │                                                                              │
+# └─────────────────────────────────────────────────────────────────────────────┘
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-quota
+  namespace: team-a
+spec:
+  hard:
+    # -------------------------------------------------------------------------
+    # COMPUTE RESOURCES
+    # -------------------------------------------------------------------------
+    # These limit the TOTAL resources across ALL pods in the namespace
+
+    # Total CPU requests: max 2 cores
+    # Sum of all pod requests.cpu cannot exceed 2
+    requests.cpu: "2"
+
+    # Total memory requests: max 4Gi
+    # Sum of all pod requests.memory cannot exceed 4Gi
+    requests.memory: 4Gi
+
+    # Total CPU limits: max 4 cores
+    # Sum of all pod limits.cpu cannot exceed 4
+    limits.cpu: "4"
+
+    # Total memory limits: max 8Gi
+    # Sum of all pod limits.memory cannot exceed 8Gi
+    limits.memory: 8Gi
+
+    # -------------------------------------------------------------------------
+    # OBJECT COUNTS
+    # -------------------------------------------------------------------------
+    # Maximum number of each resource type in the namespace
+
+    pods: "10" # Max 10 pods
+    services: "5" # Max 5 services
+    persistentvolumeclaims: "3" # Max 3 PVCs
+    configmaps: "10" # Max 10 ConfigMaps
+    secrets: "10" # Max 10 Secrets
+
+---
+# ============================================================================
+# IMPORTANT: When ResourceQuota is set, ALL pods MUST specify resources!
+# ============================================================================
+# Otherwise they will be rejected. Use LimitRange to set defaults.
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: team-a
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 200m
+        memory: 256Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      max:
+        cpu: 1
+        memory: 1Gi
+      min:
+        cpu: 50m
+        memory: 64Mi
+
+---
+# ============================================================================
+# EXAMPLE 1: Pod That Fits Within Quota
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-1
+  namespace: team-a
+  labels:
+    app: demo
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      resources:
+        requests:
+          cpu: 200m # Uses 0.2 of 2 total (10%)
+          memory: 256Mi # Uses 256Mi of 4Gi total (6%)
+        limits:
+          cpu: 400m # Uses 0.4 of 4 total (10%)
+          memory: 512Mi # Uses 512Mi of 8Gi total (6%)
+
+---
+# ============================================================================
+# EXAMPLE 2: Another Pod (Consuming More Quota)
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-2
+  namespace: team-a
+  labels:
+    app: demo
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      resources:
+        requests:
+          cpu: 500m # Uses 0.5 of remaining quota
+          memory: 512Mi
+        limits:
+          cpu: 1
+          memory: 1Gi
+
+---
+# ============================================================================
+# EXAMPLE 3: Pod Without Resources (Gets Defaults from LimitRange)
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-3
+  namespace: team-a
+  labels:
+    app: demo
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      # No resources - LimitRange defaults apply (100m CPU, 128Mi memory)
+
+---
+# ============================================================================
+# EXAMPLE 4: Pod That Would Exceed Quota (REJECTED!)
+# ============================================================================
+# Uncomment to test - this will fail if quota is exhausted
+#
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: too-big
+#   namespace: team-a
+# spec:
+#   containers:
+#     - name: app
+#       image: nginx:1.25
+#       resources:
+#         requests:
+#           cpu: 2         # Would exceed remaining quota!
+#           memory: 4Gi
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f resourcequota-example.yaml
+#
+# # Check quota usage
+# kubectl describe quota team-quota -n team-a
+#
+# # You'll see something like:
+# # Name:                   team-quota
+# # Resource                Used    Hard
+# # --------                ----    ----
+# # configmaps              1       10
+# # limits.cpu              1400m   4
+# # limits.memory           1792Mi  8Gi
+# # persistentvolumeclaims  0       3
+# # pods                    3       10
+# # requests.cpu            800m    2
+# # requests.memory         896Mi   4Gi
+# # secrets                 1       10
+# # services                0       5
+
+# ============================================================================
+# VERIFICATION COMMANDS
+# ============================================================================
+#
+# # View quota status
+# kubectl describe quota team-quota -n team-a
+#
+# # View all quotas in namespace
+# kubectl get quota -n team-a
+#
+# # View pods
+# kubectl get pods -n team-a
+#
+# # Try to exceed quota
+# kubectl run test --image=nginx -n team-a \
+#   --requests='cpu=2,memory=4Gi' --limits='cpu=4,memory=8Gi'
+# # Error: exceeded quota
+#
+# ============================================================================
+# CLEANUP
+# ============================================================================
+#
+# kubectl delete namespace team-a
+#
+# ============================================================================

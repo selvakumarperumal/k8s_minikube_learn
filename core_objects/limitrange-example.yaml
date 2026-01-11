@@ -1,0 +1,422 @@
+# ============================================================================
+# LIMITRANGE - Enforcing Resource Constraints at Namespace Level
+# ============================================================================
+# LimitRange allows you to:
+# - Set default resource requests/limits for containers
+# - Enforce minimum and maximum resource constraints
+# - Control the ratio between limits and requests
+#
+# Without LimitRange, pods without resource specs can consume unlimited resources!
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply examples:
+#    kubectl apply -f limitrange-example.yaml
+#
+# 2. Check LimitRange:
+#    kubectl describe limitrange resource-limits -n resource-constrained
+#
+# 3. Test pods (see examples below)
+#
+# 4. Cleanup:
+#    kubectl delete namespace resource-constrained
+#
+# ============================================================================
+
+---
+# ============================================================================
+# STEP 1: Create Namespace for Testing
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: resource-constrained
+  labels:
+    purpose: limitrange-demo
+
+---
+# ============================================================================
+# STEP 2: LimitRange Definition
+# ============================================================================
+# This LimitRange enforces resource policies for ALL pods in the namespace
+#
+#  ┌─────────────────────────────────────────────────────────────────────────┐
+#  │                     LimitRange: resource-limits                        │
+#  ├─────────────────────────────────────────────────────────────────────────┤
+#  │  Container Limits:                                                      │
+#  │  ┌─────────────┬─────────────┬─────────────┬─────────────┐             │
+#  │  │   Type      │   CPU       │   Memory    │   Ratio     │             │
+#  │  ├─────────────┼─────────────┼─────────────┼─────────────┤             │
+#  │  │ Min         │   50m       │   64Mi      │     -       │             │
+#  │  │ Max         │   2         │   2Gi       │     -       │             │
+#  │  │ Default Req │   100m      │   128Mi     │     -       │             │
+#  │  │ Default Lim │   500m      │   512Mi     │     -       │             │
+#  │  │ Max Ratio   │   4x        │   4x        │ Limit/Req   │             │
+#  │  └─────────────┴─────────────┴─────────────┴─────────────┘             │
+#  │                                                                          │
+#  │  Pod Limits (sum of all containers):                                    │
+#  │  ┌─────────────┬─────────────┬─────────────┐                           │
+#  │  │   Type      │   CPU       │   Memory    │                           │
+#  │  ├─────────────┼─────────────┼─────────────┤                           │
+#  │  │ Max         │   4         │   4Gi       │                           │
+#  │  └─────────────┴─────────────┴─────────────┘                           │
+#  └─────────────────────────────────────────────────────────────────────────┘
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: resource-limits
+  namespace: resource-constrained
+spec:
+  limits:
+    # -------------------------------------------------------------------------
+    # TYPE: Container
+    # Applied to each container individually
+    # -------------------------------------------------------------------------
+    - type: Container
+
+      # -----------------------------------------------------------------------
+      # default: Default LIMITS (if not specified in pod spec)
+      # -----------------------------------------------------------------------
+      # Containers without explicit limits get these values automatically
+      default:
+        cpu: 500m # Max CPU container can use
+        memory: 512Mi # Max Memory container can use
+
+      # -----------------------------------------------------------------------
+      # defaultRequest: Default REQUESTS (if not specified in pod spec)
+      # -----------------------------------------------------------------------
+      # Containers without explicit requests get these values automatically
+      defaultRequest:
+        cpu: 100m # Guaranteed CPU
+        memory: 128Mi # Guaranteed Memory
+
+      # -----------------------------------------------------------------------
+      # max: Maximum allowed resources per container
+      # -----------------------------------------------------------------------
+      # Pods requesting more than this will be REJECTED
+      max:
+        cpu: 2 # 2 CPU cores maximum
+        memory: 2Gi # 2 GiB maximum
+
+      # -----------------------------------------------------------------------
+      # min: Minimum required resources per container
+      # -----------------------------------------------------------------------
+      # Pods requesting less than this will be REJECTED
+      min:
+        cpu: 50m # At least 50 millicores
+        memory: 64Mi # At least 64 MiB
+
+      # -----------------------------------------------------------------------
+      # maxLimitRequestRatio: Maximum ratio of Limit to Request
+      # -----------------------------------------------------------------------
+      # Prevents overcommitment - limits can be at most 4x requests
+      # Example: If request is 100m CPU, limit can be max 400m CPU
+      maxLimitRequestRatio:
+        cpu: 4 # Limit can be max 4x request
+        memory: 4 # Limit can be max 4x request
+
+    # -------------------------------------------------------------------------
+    # TYPE: Pod
+    # Applied to the SUM of all containers in a pod
+    # -------------------------------------------------------------------------
+    - type: Pod
+      max:
+        cpu: 4 # Total pod CPU cannot exceed 4 cores
+        memory: 4Gi # Total pod memory cannot exceed 4 GiB
+
+---
+# ============================================================================
+# EXAMPLE 1: Pod Without Resources (Will Get Defaults)
+# ============================================================================
+# This pod doesn't specify any resources, so LimitRange applies defaults:
+# - requests: cpu=100m, memory=128Mi
+# - limits: cpu=500m, memory=512Mi
+#
+#  Before LimitRange:          After LimitRange Applied:
+#  ┌───────────────┐           ┌─────────────────────────┐
+#  │ containers:   │           │ containers:             │
+#  │   - name: app │    →      │   - name: app           │
+#  │     image:... │           │     image: ...          │
+#  │     # nothing │           │     resources:          │
+#  │               │           │       requests:         │
+#  │               │           │         cpu: 100m       │
+#  │               │           │         memory: 128Mi   │
+#  │               │           │       limits:           │
+#  │               │           │         cpu: 500m       │
+#  │               │           │         memory: 512Mi   │
+#  └───────────────┘           └─────────────────────────┘
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: default-resources
+  namespace: resource-constrained
+  labels:
+    example: default-resources
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      # No resources specified - LimitRange defaults will be applied!
+
+# HOW TO TEST:
+# ------------
+# kubectl apply -f limitrange-example.yaml
+#
+# # Check the pod's effective resources
+# kubectl get pod default-resources -n resource-constrained -o yaml | grep -A 10 resources
+#
+# # You'll see:
+# # resources:
+# #   limits:
+# #     cpu: 500m
+# #     memory: 512Mi
+# #   requests:
+# #     cpu: 100m
+# #     memory: 128Mi
+
+---
+# ============================================================================
+# EXAMPLE 2: Pod With Valid Resources
+# ============================================================================
+# This pod specifies resources within the allowed range - accepted!
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: valid-resources
+  namespace: resource-constrained
+  labels:
+    example: valid-resources
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      resources:
+        requests:
+          cpu: 200m # ✓ Between min (50m) and max (2)
+          memory: 256Mi # ✓ Between min (64Mi) and max (2Gi)
+        limits:
+          cpu: 400m # ✓ 2x request (within 4x ratio)
+          memory: 512Mi # ✓ 2x request (within 4x ratio)
+
+# HOW TO TEST:
+# ------------
+# kubectl get pod valid-resources -n resource-constrained
+# # Status should be Running
+
+---
+# ============================================================================
+# EXAMPLE 3: Pod With Partial Resources (Defaults Fill Gaps)
+# ============================================================================
+# This pod only specifies requests - LimitRange adds default limits
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: partial-resources
+  namespace: resource-constrained
+  labels:
+    example: partial-resources
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      resources:
+        requests:
+          cpu: 150m
+          memory: 200Mi
+        # No limits specified - defaults (500m CPU, 512Mi memory) applied!
+
+# HOW TO TEST:
+# ------------
+# kubectl get pod partial-resources -n resource-constrained -o yaml | grep -A 10 resources
+# # Limits will be filled with defaults: cpu=500m, memory=512Mi
+
+---
+# ============================================================================
+# EXAMPLE 4: Pod Exceeding Max (Will Be REJECTED)
+# ============================================================================
+# This pod requests more than the maximum allowed - REJECTED!
+#
+#  ┌────────────────────────────────────────────────────────────────────────┐
+#  │  REJECTION REASON:                                                      │
+#  │                                                                          │
+#  │  cpu "3" is greater than max allowed "2"                                │
+#  │  memory "3Gi" is greater than max allowed "2Gi"                         │
+#  └────────────────────────────────────────────────────────────────────────┘
+#
+# IMPORTANT: Uncomment this section to test rejection behavior
+
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: too-big
+#   namespace: resource-constrained
+#   labels:
+#     example: too-big
+# spec:
+#   containers:
+#     - name: app
+#       image: nginx:1.25
+#       resources:
+#         requests:
+#           cpu: 3        # ✗ Exceeds max of 2!
+#           memory: 3Gi   # ✗ Exceeds max of 2Gi!
+#         limits:
+#           cpu: 3
+#           memory: 3Gi
+
+# HOW TO TEST:
+# ------------
+# Uncomment the pod above, then:
+# kubectl apply -f limitrange-example.yaml
+#
+# You'll see an error like:
+# Error from server (Forbidden): error when creating "limitrange-example.yaml":
+# pods "too-big" is forbidden: [
+#   maximum cpu usage per Container is 2, but limit is 3,
+#   maximum memory usage per Container is 2Gi, but limit is 3Gi
+# ]
+
+---
+# ============================================================================
+# EXAMPLE 5: Pod Below Minimum (Will Be REJECTED)
+# ============================================================================
+# This pod requests less than the minimum required - REJECTED!
+#
+# IMPORTANT: Uncomment this section to test rejection behavior
+
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: too-small
+#   namespace: resource-constrained
+#   labels:
+#     example: too-small
+# spec:
+#   containers:
+#     - name: app
+#       image: nginx:1.25
+#       resources:
+#         requests:
+#           cpu: 10m      # ✗ Below min of 50m!
+#           memory: 32Mi  # ✗ Below min of 64Mi!
+#         limits:
+#           cpu: 50m
+#           memory: 64Mi
+
+# HOW TO TEST:
+# ------------
+# Uncomment the pod above, then:
+# kubectl apply -f limitrange-example.yaml
+#
+# Error: minimum cpu usage per Container is 50m, but request is 10m
+
+---
+# ============================================================================
+# EXAMPLE 6: Pod Violating Limit/Request Ratio (Will Be REJECTED)
+# ============================================================================
+# This pod has limits > 4x the requests - violates maxLimitRequestRatio!
+#
+# IMPORTANT: Uncomment this section to test rejection behavior
+
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: bad-ratio
+#   namespace: resource-constrained
+#   labels:
+#     example: bad-ratio
+# spec:
+#   containers:
+#     - name: app
+#       image: nginx:1.25
+#       resources:
+#         requests:
+#           cpu: 100m
+#           memory: 128Mi
+#         limits:
+#           cpu: 1        # ✗ 10x request (1000m/100m > 4x max ratio!)
+#           memory: 1Gi   # ✗ 8x request (1Gi/128Mi > 4x max ratio!)
+
+# HOW TO TEST:
+# ------------
+# Uncomment the pod above, then:
+# kubectl apply -f limitrange-example.yaml
+#
+# Error: cpu max limit to request ratio per Container is 4,
+#        but provided ratio is 10.000000
+
+---
+# ============================================================================
+# EXAMPLE 7: Multi-Container Pod (Pod Limits Apply)
+# ============================================================================
+# Total resources of all containers cannot exceed Pod-level max
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-container
+  namespace: resource-constrained
+  labels:
+    example: multi-container
+spec:
+  containers:
+    # Container 1
+    - name: app
+      image: nginx:1.25
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1
+          memory: 1Gi
+
+    # Container 2
+    - name: sidecar
+      image: busybox:1.35
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1
+          memory: 1Gi
+
+    # Total: requests 1000m CPU, 1Gi memory
+    #        limits 2 CPU, 2Gi memory
+    # Both within Pod max (4 CPU, 4Gi)
+# HOW TO TEST:
+# ------------
+# kubectl get pod multi-container -n resource-constrained
+# # Should be Running
+#
+# # Try adding more containers that exceed Pod limits - will fail
+
+# ============================================================================
+# VERIFICATION COMMANDS
+# ============================================================================
+#
+# # View LimitRange details
+# kubectl describe limitrange resource-limits -n resource-constrained
+#
+# # Check all pods in namespace
+# kubectl get pods -n resource-constrained
+#
+# # See applied resources for a pod
+# kubectl get pod <pod-name> -n resource-constrained -o jsonpath='{.spec.containers[*].resources}'
+#
+# # Watch for events (shows rejections)
+# kubectl get events -n resource-constrained --sort-by='.lastTimestamp'
+#
+# ============================================================================
+# CLEANUP
+# ============================================================================
+#
+# kubectl delete namespace resource-constrained
+#
+# ============================================================================

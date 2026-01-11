@@ -66,6 +66,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
     # ---------------------------------------------------------------------------
     # Container 2: Reader - reads and displays logs
@@ -93,6 +96,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   # ---------------------------------------------------------------------------
   # Volumes definition
@@ -230,6 +236,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   volumes:
     - name: host-logs
@@ -296,6 +305,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   volumes:
     - name: host-data
@@ -384,6 +396,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   volumes:
     - name: config
@@ -439,6 +454,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   volumes:
     - name: config
@@ -515,6 +533,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   volumes:
     - name: secrets
@@ -590,6 +611,9 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   volumes:
     - name: all-in-one
@@ -691,6 +715,9 @@ spec:
         requests:
           cpu: 50m
           memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
 
   volumes:
     - name: config

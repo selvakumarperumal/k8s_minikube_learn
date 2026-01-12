@@ -1,0 +1,238 @@
+# ==============================================================================
+# CNI CONFIGURATION EXAMPLES
+# ==============================================================================
+# This file contains reference CNI configurations for learning purposes.
+# These are NOT Kubernetes manifests - they show what's in /etc/cni/net.d/
+# ==============================================================================
+
+# ==============================================================================
+# EXAMPLE 1: BRIDGE CNI CONFIGURATION
+# ==============================================================================
+# This is what a basic bridge CNI config looks like
+# Location: /etc/cni/net.d/10-bridge.conf
+# ------------------------------------------------------------------------------
+# {
+#   "cniVersion": "1.0.0",
+#   "name": "mybridge",
+#   "type": "bridge",
+#   "bridge": "cni0",
+#   "isGateway": true,
+#   "ipMasq": true,
+#   "hairpinMode": true,
+#   "ipam": {
+#     "type": "host-local",
+#     "subnet": "10.244.0.0/24",
+#     "routes": [
+#       { "dst": "0.0.0.0/0" }
+#     ]
+#   }
+# }
+# ------------------------------------------------------------------------------
+#
+# EXPLANATION:
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  CNI BRIDGE CONFIGURATION BREAKDOWN                                  │
+# ├─────────────────────────────────────────────────────────────────────┤
+# │                                                                      │
+# │  "cniVersion": "1.0.0"                                              │
+# │  └── CNI specification version                                      │
+# │                                                                      │
+# │  "name": "mybridge"                                                 │
+# │  └── Network name (used for IPAM state directory)                   │
+# │                                                                      │
+# │  "type": "bridge"                                                   │
+# │  └── Plugin binary name (/opt/cni/bin/bridge)                       │
+# │                                                                      │
+# │  "bridge": "cni0"                                                   │
+# │  └── Linux bridge name on host                                      │
+# │                                                                      │
+# │  "isGateway": true                                                  │
+# │  └── Bridge gets IP address (acts as gateway)                       │
+# │                                                                      │
+# │  "ipMasq": true                                                     │
+# │  └── Enable IP masquerading (NAT for outbound)                      │
+# │                                                                      │
+# │  "hairpinMode": true                                                │
+# │  └── Allow pod to access its own ClusterIP                          │
+# │                                                                      │
+# │  "ipam": {...}                                                      │
+# │  └── IP Address Management configuration                            │
+# │      └── "type": "host-local" - Use local file-based IPAM          │
+# │      └── "subnet": "10.244.0.0/24" - IP range for pods              │
+# │                                                                      │
+# └─────────────────────────────────────────────────────────────────────┘
+
+---
+# ==============================================================================
+# EXAMPLE 2: FLANNEL CONFIGURATION
+# ==============================================================================
+# This is what Flannel's CNI config looks like
+# Location: /etc/cni/net.d/10-flannel.conflist
+# ------------------------------------------------------------------------------
+# {
+#   "name": "cbr0",
+#   "cniVersion": "0.3.1",
+#   "plugins": [
+#     {
+#       "type": "flannel",
+#       "delegate": {
+#         "hairpinMode": true,
+#         "isDefaultGateway": true
+#       }
+#     },
+#     {
+#       "type": "portmap",
+#       "capabilities": {
+#         "portMappings": true
+#       }
+#     }
+#   ]
+# }
+# ------------------------------------------------------------------------------
+#
+# DIAGRAM:
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │                    FLANNEL PLUGIN CHAIN                              │
+# ├─────────────────────────────────────────────────────────────────────┤
+# │                                                                      │
+# │  Pod Created                                                         │
+# │       │                                                              │
+# │       ▼                                                              │
+# │  ┌──────────────────────────────────────────────────────────────┐  │
+# │  │  Plugin 1: flannel                                            │  │
+# │  │  • Reads subnet info from /run/flannel/subnet.env            │  │
+# │  │  • Delegates to bridge plugin with correct subnet            │  │
+# │  │  • Creates veth pair and bridge connection                   │  │
+# │  └──────────────────────────────────────────────────────────────┘  │
+# │       │                                                              │
+# │       ▼                                                              │
+# │  ┌──────────────────────────────────────────────────────────────┐  │
+# │  │  Plugin 2: portmap                                            │  │
+# │  │  • Sets up port mappings if hostPort is specified            │  │
+# │  │  • Creates iptables DNAT rules                               │  │
+# │  └──────────────────────────────────────────────────────────────┘  │
+# │       │                                                              │
+# │       ▼                                                              │
+# │  Pod has network!                                                    │
+# │                                                                      │
+# └─────────────────────────────────────────────────────────────────────┘
+
+---
+# ==============================================================================
+# EXAMPLE 3: CALICO CONFIGURATION
+# ==============================================================================
+# This is what Calico's CNI config looks like
+# Location: /etc/cni/net.d/10-calico.conflist
+# ------------------------------------------------------------------------------
+# {
+#   "name": "k8s-pod-network",
+#   "cniVersion": "0.3.1",
+#   "plugins": [
+#     {
+#       "type": "calico",
+#       "datastore_type": "kubernetes",
+#       "mtu": 0,
+#       "nodename_file_optional": false,
+#       "log_level": "Info",
+#       "log_file_path": "/var/log/calico/cni/cni.log",
+#       "ipam": {
+#         "type": "calico-ipam",
+#         "assign_ipv4": "true",
+#         "assign_ipv6": "false"
+#       },
+#       "container_settings": {
+#         "allow_ip_forwarding": false
+#       },
+#       "policy": {
+#         "type": "k8s"
+#       },
+#       "kubernetes": {
+#         "k8s_api_root": "https://10.96.0.1:443",
+#         "kubeconfig": "/etc/cni/net.d/calico-kubeconfig"
+#       }
+#     },
+#     {
+#       "type": "bandwidth",
+#       "capabilities": {"bandwidth": true}
+#     },
+#     {
+#       "type": "portmap",
+#       "snat": true,
+#       "capabilities": {"portMappings": true}
+#     }
+#   ]
+# }
+# ------------------------------------------------------------------------------
+#
+# CALICO COMPONENTS:
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │                    CALICO CNI CHAIN                                  │
+# ├─────────────────────────────────────────────────────────────────────┤
+# │                                                                      │
+# │  Plugin 1: calico                                                    │
+# │  ├── Uses Kubernetes API as datastore                               │
+# │  ├── calico-ipam for IP management                                  │
+# │  ├── Supports network policies                                      │
+# │  └── Logs to /var/log/calico/cni/cni.log                           │
+# │                                                                      │
+# │  Plugin 2: bandwidth                                                 │
+# │  └── Rate limiting for pods (optional)                              │
+# │                                                                      │
+# │  Plugin 3: portmap                                                   │
+# │  └── Host port mapping support                                      │
+# │                                                                      │
+# └─────────────────────────────────────────────────────────────────────┘
+
+---
+# ==============================================================================
+# EXAMPLE 4: HOST-LOCAL IPAM CONFIGURATION
+# ==============================================================================
+# Detailed host-local IPAM configuration
+# ------------------------------------------------------------------------------
+# {
+#   "type": "host-local",
+#   "ranges": [
+#     [
+#       {
+#         "subnet": "10.244.0.0/24",
+#         "rangeStart": "10.244.0.10",
+#         "rangeEnd": "10.244.0.250",
+#         "gateway": "10.244.0.1"
+#       }
+#     ]
+#   ],
+#   "routes": [
+#     { "dst": "0.0.0.0/0" },
+#     { "dst": "10.244.0.0/16", "gw": "10.244.0.1" }
+#   ],
+#   "dataDir": "/var/lib/cni/networks"
+# }
+# ------------------------------------------------------------------------------
+#
+# IP ALLOCATION:
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │                    HOST-LOCAL IPAM                                   │
+# ├─────────────────────────────────────────────────────────────────────┤
+# │                                                                      │
+# │  Subnet: 10.244.0.0/24 (256 IPs)                                    │
+# │                                                                      │
+# │  ┌─────────────────────────────────────────────────────────────┐   │
+# │  │ 10.244.0.0   │ Network address (reserved)                   │   │
+# │  │ 10.244.0.1   │ Gateway (cni0 bridge)                        │   │
+# │  │ 10.244.0.2-9 │ (not in range - skipped)                     │   │
+# │  │ 10.244.0.10  │ rangeStart - First pod IP                    │   │
+# │  │ 10.244.0.11  │ Second pod IP                                │   │
+# │  │ ...          │ ...                                          │   │
+# │  │ 10.244.0.250 │ rangeEnd - Last pod IP                       │   │
+# │  │ 10.244.0.251-254 │ (not in range - available for static)    │   │
+# │  │ 10.244.0.255 │ Broadcast address (reserved)                 │   │
+# │  └─────────────────────────────────────────────────────────────┘   │
+# │                                                                      │
+# │  Storage: /var/lib/cni/networks/<network-name>/                     │
+# │  └── One file per allocated IP containing container ID              │
+# │                                                                      │
+# └─────────────────────────────────────────────────────────────────────┘

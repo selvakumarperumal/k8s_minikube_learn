@@ -1,0 +1,355 @@
+# ==============================================================================
+# NETWORK POLICY EXAMPLES
+# ==============================================================================
+# These examples demonstrate Kubernetes Network Policies
+#
+# PREREQUISITES:
+#   - Minikube with Calico CNI (network policies require Calico/Cilium)
+#   - Start with: minikube start --cni=calico
+#
+# USAGE:
+#   kubectl apply -f 02-network-policies.yaml
+#   kubectl delete -f 02-network-policies.yaml
+# ==============================================================================
+
+---
+# ==============================================================================
+# NAMESPACE FOR NETWORK POLICY DEMOS
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netpol-demo
+  labels:
+    name: netpol-demo
+
+---
+# ==============================================================================
+# EXAMPLE 1: DEFAULT DENY ALL INGRESS
+# ==============================================================================
+# By default, pods accept traffic from any source. This policy denies all
+# ingress traffic to pods in the namespace (zero-trust baseline).
+#
+# DIAGRAM:
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                    BEFORE DEFAULT DENY                                      │
+# │                    ───────────────────                                      │
+# │                                                                             │
+# │       ┌─────────┐         ✓         ┌─────────┐                            │
+# │       │ Any Pod │ ────────────────► │ Web Pod │                            │
+# │       └─────────┘    (allowed)      └─────────┘                            │
+# │                                                                             │
+# ├────────────────────────────────────────────────────────────────────────────┤
+# │                    AFTER DEFAULT DENY                                       │
+# │                    ──────────────────                                       │
+# │                                                                             │
+# │       ┌─────────┐         ✗         ┌─────────┐                            │
+# │       │ Any Pod │ ──────────────X─► │ Web Pod │                            │
+# │       └─────────┘    (denied)       └─────────┘                            │
+# │                                                                             │
+# └────────────────────────────────────────────────────────────────────────────┘
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: netpol-demo
+spec:
+  # Apply to ALL pods in namespace (empty selector = all pods)
+  podSelector: {}
+  # Only ingress rules (no egress restrictions)
+  policyTypes:
+    - Ingress
+  # No ingress rules = deny all ingress
+
+---
+# ==============================================================================
+# EXAMPLE 2: ALLOW INGRESS FROM SPECIFIC PODS
+# ==============================================================================
+# Allow traffic to web pods only from pods with label 'role: frontend'
+#
+# DIAGRAM:
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                    ALLOW FROM FRONTEND ONLY                                 │
+# │                                                                             │
+# │   ┌──────────────────┐     ✓      ┌──────────────────┐                     │
+# │   │ role: frontend   │ ──────────►│ app: web         │                     │
+# │   │ (allowed)        │            │ (protected)      │                     │
+# │   └──────────────────┘            └──────────────────┘                     │
+# │                                           ▲                                 │
+# │   ┌──────────────────┐     ✗              │                                │
+# │   │ role: backend    │ ────────X──────────┘                                │
+# │   │ (denied)         │                                                     │
+# │   └──────────────────┘                                                     │
+# │                                                                             │
+# │   ┌──────────────────┐     ✗                                               │
+# │   │ (any other pod)  │ ────────X──────────►                                │
+# │   │ (denied)         │                                                     │
+# │   └──────────────────┘                                                     │
+# │                                                                             │
+# └────────────────────────────────────────────────────────────────────────────┘
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-web
+  namespace: netpol-demo
+spec:
+  # Apply to pods with label app=web
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from pods with role=frontend
+    - from:
+        - podSelector:
+            matchLabels:
+              role: frontend
+      ports:
+        - protocol: TCP
+          port: 80
+
+---
+# ==============================================================================
+# EXAMPLE 3: ALLOW INGRESS FROM SPECIFIC NAMESPACE
+# ==============================================================================
+# Allow traffic from pods in the 'monitoring' namespace
+#
+# DIAGRAM:
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                                                                             │
+# │  NAMESPACE: monitoring                    NAMESPACE: netpol-demo           │
+# │  ┌────────────────────────┐               ┌───────────────────────────┐   │
+# │  │                        │      ✓        │                           │   │
+# │  │  ┌────────────────┐   │ ──────────────►│   ┌────────────────┐     │   │
+# │  │  │ Prometheus     │   │   (allowed)    │   │ app: monitored │     │   │
+# │  │  └────────────────┘   │               │   └────────────────┘     │   │
+# │  │                        │               │                           │   │
+# │  └────────────────────────┘               └───────────────────────────┘   │
+# │                                                                             │
+# │  NAMESPACE: other                                                           │
+# │  ┌────────────────────────┐      ✗                                         │
+# │  │  ┌────────────────┐   │ ────────X────►                                  │
+# │  │  │ Any Pod        │   │   (denied)                                      │
+# │  │  └────────────────┘   │                                                 │
+# │  └────────────────────────┘                                                │
+# │                                                                             │
+# └────────────────────────────────────────────────────────────────────────────┘
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-monitoring-namespace
+  namespace: netpol-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: monitored
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Allow from any pod in namespace with label name=monitoring
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# ==============================================================================
+# EXAMPLE 4: EGRESS POLICY - RESTRICT OUTBOUND
+# ==============================================================================
+# Allow pods to only reach specific destinations
+#
+# DIAGRAM:
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                          EGRESS RESTRICTION                                 │
+# │                                                                             │
+# │   ┌────────────────────┐                                                   │
+# │   │ role: restricted   │                                                   │
+# │   │ (source pod)       │                                                   │
+# │   └─────────┬──────────┘                                                   │
+# │             │                                                               │
+# │       ┌─────┴─────┐                                                        │
+# │       ▼           ▼                                                        │
+# │       ✓           ✗                                                        │
+# │  ┌─────────┐  ┌─────────┐  ┌─────────┐                                    │
+# │  │ DNS     │  │ Other   │  │ Internet│                                    │
+# │  │ :53     │  │ :443    │  │ Blocked │                                    │
+# │  │ Allowed │  │ Blocked │  │         │                                    │
+# │  └─────────┘  └─────────┘  └─────────┘                                    │
+# │                                                                             │
+# └────────────────────────────────────────────────────────────────────────────┘
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-egress
+  namespace: netpol-demo
+spec:
+  podSelector:
+    matchLabels:
+      role: restricted
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS (kube-dns)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow to database pods only
+    - to:
+        - podSelector:
+            matchLabels:
+              app: database
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# ==============================================================================
+# EXAMPLE 5: ALLOW SPECIFIC IP RANGE (CIDR)
+# ==============================================================================
+# Allow traffic from specific IP ranges (useful for external access)
+#
+# DIAGRAM:
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                          IP BLOCK POLICY                                    │
+# │                                                                             │
+# │   External IPs                                                              │
+# │                                                                             │
+# │   10.0.0.0/8         ✓                   ┌─────────────────────┐           │
+# │   (private) ──────────────────────────── │  app: external-api  │           │
+# │                      (allowed)           │                     │           │
+# │                                          │  Port: 443          │           │
+# │   192.168.1.0/24     ✓                   │                     │           │
+# │   (office) ───────────────────────────── │                     │           │
+# │                      (allowed)           └─────────────────────┘           │
+# │                                                    ▲                       │
+# │   0.0.0.0/0          ✗                            │                       │
+# │   (internet) ─────────────X───────────────────────┘                        │
+# │   (except above)     (denied)                                              │
+# │                                                                             │
+# └────────────────────────────────────────────────────────────────────────────┘
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-ip-ranges
+  namespace: netpol-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: external-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Allow from private network
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        # Allow from office network
+        - ipBlock:
+            cidr: 192.168.1.0/24
+            except:
+              - 192.168.1.100/32 # Except this specific IP
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# ==============================================================================
+# TEST PODS FOR NETWORK POLICY DEMOS
+# ==============================================================================
+
+# Web server pod (protected by policies)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-server
+  namespace: netpol-demo
+  labels:
+    app: web
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "100m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+
+---
+# Frontend pod (allowed to access web)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frontend
+  namespace: netpol-demo
+  labels:
+    role: frontend
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
+
+---
+# Backend pod (NOT allowed to access web by policy)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend
+  namespace: netpol-demo
+  labels:
+    role: backend
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
+
+---
+# ==============================================================================
+# TESTING COMMANDS
+# ==============================================================================
+# After applying this file, test the policies:
+#
+# 1. Test frontend can reach web (should work):
+#    kubectl exec -n netpol-demo frontend -- curl -s --max-time 5 http://web-server
+#
+# 2. Test backend cannot reach web (should fail/timeout):
+#    kubectl exec -n netpol-demo backend -- curl -s --max-time 5 http://web-server
+#
+# 3. View network policies:
+#    kubectl get networkpolicy -n netpol-demo
+#    kubectl describe networkpolicy -n netpol-demo
+# ==============================================================================

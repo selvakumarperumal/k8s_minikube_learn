@@ -2,124 +2,173 @@
 
 ## Table of Contents
 
-1. [The Challenge](#the-challenge)
-2. [Overlay Networks](#overlay-networks)
-3. [VXLAN Deep Dive](#vxlan-deep-dive)
-4. [IPIP Tunneling](#ipip-tunneling)
-5. [BGP Native Routing](#bgp-native-routing)
-6. [Comparison](#comparison)
-7. [Minikube Multi-Node Lab](#minikube-multi-node-lab)
+1. [Introduction](#introduction)
+2. [The Cross-Node Challenge](#the-cross-node-challenge)
+3. [Overlay Networks](#overlay-networks)
+4. [VXLAN Deep Dive](#vxlan-deep-dive)
+5. [IPIP Tunneling](#ipip-tunneling)
+6. [BGP Native Routing](#bgp-native-routing)
+7. [Comparison and Use Cases](#comparison-and-use-cases)
+8. [Multi-Node Lab with Minikube](#multi-node-lab-with-minikube)
 
 ---
 
-## The Challenge
+## Introduction
 
-### Why Cross-Node is Different
+In the previous chapter, we learned how pods communicate within a single node. But what happens when Pod A on Node 1 needs to talk to Pod B on Node 2?
 
-```mermaid
-flowchart TB
-    subgraph Problem["The Cross-Node Problem"]
-        direction TB
-        Q1["Pod A on Node 1 has IP 10.0.1.5"]
-        Q2["Pod C on Node 2 has IP 10.0.2.10"]
-        Q3["How does packet from 10.0.1.5 reach 10.0.2.10?"]
-        Q4["Physical network doesn't know about pod IPs!"]
-    end
-    
-    style Problem fill:#ff5555,stroke:#ff79c6,color:#f8f8f2
+This chapter explains the different approaches to **cross-node networking** and when to use each one.
+
+### What You'll Learn
+
+By the end of this chapter, you'll understand:
+- Why cross-node networking is challenging
+- How overlay networks work (VXLAN, IPIP)
+- How native routing works (BGP)
+- Which approach to choose for your cluster
+
+---
+
+## The Cross-Node Challenge
+
+### The Problem
+
+Pods use "private" IP addresses from the cluster's CIDR (like 10.244.x.x). These addresses are not routable on the physical network - routers don't know how to reach them.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     THE CROSS-NODE PROBLEM                           │
+│                                                                      │
+│  Node 1 (192.168.1.10)           Node 2 (192.168.1.11)              │
+│  ┌───────────────────┐           ┌───────────────────┐              │
+│  │                   │           │                   │              │
+│  │  Pod A            │           │  Pod B            │              │
+│  │  10.244.0.5       │           │  10.244.1.7       │              │
+│  │                   │           │                   │              │
+│  └───────────────────┘           └───────────────────┘              │
+│                                                                      │
+│           Pod A sends: "Dear 10.244.1.7, hello!"                    │
+│                              │                                       │
+│                              ▼                                       │
+│           ┌───────────────────────────────────┐                     │
+│           │          Physical Router          │                     │
+│           │                                   │                     │
+│           │   "10.244.1.7? Never heard of    │                     │
+│           │    that address. DROPPED!"        │                     │
+│           │                                   │                     │
+│           └───────────────────────────────────┘                     │
+│                                                                      │
+│  The physical network only knows about node IPs (192.168.1.x).     │
+│  It has no idea that 10.244.x.x addresses exist!                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### The Network Gap
+### The Solutions
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     THE CROSS-NODE CHALLENGE                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  Node 1 (192.168.1.10)              Node 2 (192.168.1.11)               │
-│  ┌─────────────────────┐            ┌─────────────────────┐             │
-│  │  Pod A: 10.0.1.5    │            │  Pod C: 10.0.2.10   │             │
-│  │         │           │            │         ▲           │             │
-│  │         ▼           │            │         │           │             │
-│  │  cni0: 10.0.1.1     │            │  cni0: 10.0.2.1     │             │
-│  │         │           │            │         │           │             │
-│  │         ▼           │            │         ▲           │             │
-│  │  eth0: 192.168.1.10 │            │  eth0: 192.168.1.11 │             │
-│  └─────────┼───────────┘            └─────────┼───────────┘             │
-│            │                                  │                          │
-│            └─────────────┬────────────────────┘                          │
-│                          │                                               │
-│            ┌─────────────▼─────────────┐                                │
-│            │    Physical Network        │                                │
-│            │                            │                                │
-│            │  Only knows about:         │                                │
-│            │  • 192.168.1.10            │                                │
-│            │  • 192.168.1.11            │                                │
-│            │                            │                                │
-│            │  Does NOT know:            │                                │
-│            │  • 10.0.1.5 (Pod A)        │                                │
-│            │  • 10.0.2.10 (Pod C)       │                                │
-│            └────────────────────────────┘                                │
-│                                                                          │
-│  Challenge: Route pod traffic across physical network that doesn't      │
-│  understand pod IP addresses                                            │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+There are two main approaches to solve this:
 
-### Solution Approaches
-
-```mermaid
-flowchart TB
-    subgraph Solutions["Cross-Node Solutions"]
-        Overlay["Overlay Networks\n━━━━━━━━━━━━━\nEncapsulate pod traffic\ninside host traffic"]
-        
-        Native["Native Routing\n━━━━━━━━━━━━━\nAdvertise pod routes\nto physical network"]
-    end
-    
-    Overlay --> VXLAN["VXLAN"]
-    Overlay --> IPIP["IPIP"]
-    Overlay --> Geneve["Geneve"]
-    
-    Native --> BGP["BGP"]
-    Native --> Static["Static Routes"]
-    
-    style Overlay fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style Native fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
-```
+| Approach | How It Works | Analogy |
+|----------|--------------|---------|
+| **Overlay Network** | Wrap pod packets inside regular IP packets that use node IPs | Putting a letter in another envelope |
+| **Native Routing** | Teach physical routers about pod network routes | Adding pod addresses to the phone book |
 
 ---
 
 ## Overlay Networks
 
-### What is an Overlay?
+### What is an Overlay Network?
 
-An overlay network creates a virtual network on top of the physical network by encapsulating packets.
+An **overlay network** is a virtual network built on top of an existing physical network. It works by **encapsulating** (wrapping) packets inside other packets.
 
-```mermaid
-flowchart TB
-    subgraph Overlay["Overlay Network Concept"]
-        Original["Original Packet\n[Src: 10.0.1.5]\n[Dst: 10.0.2.10]"]
-        
-        Encap["Encapsulated Packet\n━━━━━━━━━━━━━━━━━━━\n[Outer: 192.168.1.10 → 192.168.1.11]\n[Inner: 10.0.1.5 → 10.0.2.10]"]
-        
-        Decap["Decapsulated\n[Src: 10.0.1.5]\n[Dst: 10.0.2.10]"]
-    end
-    
-    Original -->|"Wrap"| Encap
-    Encap -->|"Unwrap"| Decap
-    
-    style Encap fill:#f1fa8c,stroke:#ffb86c,color:#282a36
+### How Encapsulation Works
+
+Think of it like sending a letter:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      ENCAPSULATION EXPLAINED                         │
+│                                                                      │
+│  The Letter Analogy:                                                 │
+│  ────────────────────                                               │
+│                                                                      │
+│  You want to send a letter to someone in another building,          │
+│  but the postal service doesn't deliver to room numbers,            │
+│  only to building addresses.                                         │
+│                                                                      │
+│  ORIGINAL LETTER:                                                    │
+│  ┌─────────────────────────────────────────────────────┐            │
+│  │  To: Room 512, Building B                           │            │
+│  │  From: Room 101, Building A                         │            │
+│  │                                                      │            │
+│  │  Dear Friend, ...                                   │            │
+│  └─────────────────────────────────────────────────────┘            │
+│                                                                      │
+│  Post office: "Room 512? I don't know where that is!"              │
+│                                                                      │
+│  SOLUTION: Put it in an outer envelope with building addresses:     │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  OUTER ENVELOPE:                                              │  │
+│  │  To: Building B, 123 Main St                                  │  │
+│  │  From: Building A, 456 Oak Ave                                │  │
+│  │  ┌─────────────────────────────────────────────────────────┐ │  │
+│  │  │  INNER LETTER:                                          │ │  │
+│  │  │  To: Room 512, Building B                               │ │  │
+│  │  │  From: Room 101, Building A                             │ │  │
+│  │  │  Dear Friend, ...                                       │ │  │
+│  │  └─────────────────────────────────────────────────────────┘ │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  Now the post office can deliver to Building B.                     │
+│  Building B's mailroom opens the outer envelope,                    │
+│  sees the inner letter is for Room 512, and delivers it!           │
+│                                                                      │
+│  In networking terms:                                                │
+│  • Inner letter = Original pod-to-pod packet (10.244.x.x)          │
+│  • Outer envelope = New packet with node IPs (192.168.x.x)         │
+│  • Building mailroom = Node's network stack (decapsulates)         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Overlay Benefits & Drawbacks
+### Encapsulation in Kubernetes
 
-| Aspect | Benefit | Drawback |
-|--------|---------|----------|
-| **Compatibility** | Works on any network | Overhead from encapsulation |
-| **Setup** | No network changes needed | Slightly lower MTU |
-| **Isolation** | Complete virtual network | Debugging complexity |
-| **Scale** | Works at any scale | CPU for encap/decap |
+Here's what encapsulation looks like with real network packets:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PACKET ENCAPSULATION                              │
+│                                                                      │
+│  ORIGINAL PACKET (what Pod A sends):                                │
+│  ┌───────────────────────────────────────────────────────────────┐ │
+│  │ Eth │ IP Header                     │ TCP │ Data               │ │
+│  │     │ Src: 10.244.0.5              │     │ "GET /api"        │ │
+│  │     │ Dst: 10.244.1.7              │     │                    │ │
+│  └───────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  Size: ~1500 bytes (typical MTU)                                    │
+│                                                                      │
+│  AFTER ENCAPSULATION (what travels between nodes):                  │
+│  ┌───────────────────────────────────────────────────────────────┐ │
+│  │ Eth │ Outer IP │ UDP  │ VXLAN │ Original Packet              │ │
+│  │     │ Header   │      │ Header│                               │ │
+│  │     │          │      │       │ IP │ TCP │ Data               │ │
+│  │     │Src:      │ Port │ VNI   │    │     │                    │ │
+│  │     │192.168   │ 4789 │       │    │     │                    │ │
+│  │     │.1.10     │      │       │    │     │                    │ │
+│  │     │Dst:      │      │       │    │     │                    │ │
+│  │     │192.168   │      │       │    │     │                    │ │
+│  │     │.1.11     │      │       │    │     │                    │ │
+│  └───────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  Added overhead: ~50 bytes (VXLAN) or ~20 bytes (IPIP)             │
+│                                                                      │
+│  The physical network sees: 192.168.1.10 → 192.168.1.11            │
+│  It can route this normally! The pod IPs are hidden inside.        │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -127,85 +176,185 @@ flowchart TB
 
 ### What is VXLAN?
 
-VXLAN (Virtual Extensible LAN) encapsulates Layer 2 frames in UDP packets.
+**VXLAN** (Virtual Extensible LAN) is the most common overlay technology. It encapsulates Layer 2 (Ethernet) frames inside UDP packets.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         VXLAN PACKET STRUCTURE                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  OUTER ETHERNET HEADER                                           │   │
-│  │  [Dst MAC: Node 2 MAC] [Src MAC: Node 1 MAC] [Type: IP]         │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  OUTER IP HEADER                                                 │   │
-│  │  [Src: 192.168.1.10] [Dst: 192.168.1.11] [Proto: UDP]           │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  OUTER UDP HEADER                                                │   │
-│  │  [Src Port: ephemeral] [Dst Port: 8472 (Linux) / 4789 (std)]    │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  VXLAN HEADER (8 bytes)                                          │   │
-│  │  [Flags] [Reserved] [VNI: 1] [Reserved]                          │   │
-│  │                      └── Virtual Network Identifier              │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  INNER ETHERNET HEADER                                           │   │
-│  │  [Dst MAC: Pod C MAC] [Src MAC: Pod A MAC] [Type: IP]           │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  INNER IP HEADER (Original Pod Packet)                           │   │
-│  │  [Src: 10.0.1.5] [Dst: 10.0.2.10]                               │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  INNER PAYLOAD (TCP/UDP + Data)                                  │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Overhead: 50 bytes (14 outer eth + 20 IP + 8 UDP + 8 VXLAN)           │
-│  Default MTU: 1500 - 50 = 1450 for inner packet                         │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+### Why VXLAN?
 
-### VXLAN Flow Diagram
+| Advantage | Explanation |
+|-----------|-------------|
+| **Works everywhere** | Uses UDP, which traverses firewalls and NAT |
+| **Standard protocol** | Widely supported by hardware and software |
+| **Scalable** | Supports 16 million virtual networks (24-bit VNI) |
+| **Mature** | Well-tested and understood |
+
+### How VXLAN Works Step by Step
+
+Let's trace a packet from Pod A on Node 1 to Pod B on Node 2:
 
 ```mermaid
 sequenceDiagram
-    participant PodA as Pod A<br/>10.0.1.5
-    participant Node1 as Node 1<br/>VTEP
-    participant Network as Physical<br/>Network
-    participant Node2 as Node 2<br/>VTEP
-    participant PodC as Pod C<br/>10.0.2.10
+    participant PodA as Pod A<br/>10.244.0.5
+    participant VTEP1 as VTEP (Node 1)<br/>flannel.1
+    participant Physical as Physical Network
+    participant VTEP2 as VTEP (Node 2)<br/>flannel.1
+    participant PodB as Pod B<br/>10.244.1.7
     
-    PodA->>Node1: Original packet<br/>Src: 10.0.1.5<br/>Dst: 10.0.2.10
+    Note over PodA,PodB: Step 1: Pod A sends packet
+    PodA->>VTEP1: Original: Src=10.244.0.5, Dst=10.244.1.7
     
-    Node1->>Node1: VXLAN Encapsulate
-    Note over Node1: Wrap in UDP<br/>Outer: 192.168.1.10 → .11
+    Note over VTEP1: Step 2: Node 1 encapsulates
+    Note over VTEP1: Wraps in UDP:4789<br/>Outer Src=192.168.1.10<br/>Outer Dst=192.168.1.11
     
-    Node1->>Network: Encapsulated packet
-    Network->>Node2: Route by outer IP
+    VTEP1->>Physical: Step 3: Encapsulated packet
+    Note over Physical: Routed based on<br/>192.168.1.x addresses
     
-    Node2->>Node2: VXLAN Decapsulate
-    Note over Node2: Remove outer headers
+    Physical->>VTEP2: Step 4: Arrives at Node 2
     
-    Node2->>PodC: Original packet<br/>Src: 10.0.1.5<br/>Dst: 10.0.2.10
+    Note over VTEP2: Step 5: Decapsulate
+    Note over VTEP2: Remove outer headers<br/>Original packet restored
+    
+    VTEP2->>PodB: Step 6: Deliver to Pod B
+    Note over PodB: Sees: Src=10.244.0.5
 ```
 
-### VXLAN in Flannel
+**Explanation of each step:**
 
-```bash
-# View VXLAN interface on Minikube
-minikube ssh
+1. **Pod A sends packet**: Application in Pod A sends to 10.244.1.7
+2. **Routing decision**: Node 1 sees 10.244.1.0/24 is on Node 2, needs encapsulation
+3. **VTEP encapsulates**: The VXLAN Tunnel Endpoint (flannel.1 interface) wraps the packet
+4. **Physical network**: Packet travels using node IPs (which routers understand)
+5. **VTEP decapsulates**: Node 2's VTEP unwraps the outer packet
+6. **Delivery**: Original packet delivered to Pod B
 
-# Show the flannel interface
-ip -d link show flannel.1
+### What is a VTEP?
 
-# Output example:
-# flannel.1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue
-#     link/ether 5a:46:3a:xx:xx:xx brd ff:ff:ff:ff:ff:ff promiscuity 0
-#     vxlan id 1 local 192.168.1.10 dev eth0 srcport 0 0 dstport 8472
+A **VTEP** (VXLAN Tunnel Endpoint) is the interface that handles encapsulation and decapsulation:
 
-# View FDB (forwarding database) - maps pod IPs to node IPs
-bridge fdb show dev flannel.1
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         VTEP EXPLAINED                               │
+│                                                                      │
+│  Node 1                                                              │
+│  ┌────────────────────────────────────────────────────────────────┐│
+│  │                                                                 ││
+│  │  Pod A                                                          ││
+│  │  10.244.0.5                                                     ││
+│  │      │                                                          ││
+│  │      │ Original packet                                          ││
+│  │      ▼                                                          ││
+│  │                                                                 ││
+│  │  ┌───────────────────────────────────────────────────────────┐ ││
+│  │  │  flannel.1 (VTEP)                                         │ ││
+│  │  │  ─────────────────────────────────────────────────────── │ ││
+│  │  │  This is the VXLAN Tunnel Endpoint                       │ ││
+│  │  │                                                           │ ││
+│  │  │  Jobs:                                                    │ ││
+│  │  │  1. Receive packets destined for remote pods             │ ││
+│  │  │  2. Look up which node has the destination pod           │ ││
+│  │  │  3. Encapsulate: Add outer IP + UDP + VXLAN headers     │ ││
+│  │  │  4. Send to the other node's VTEP                        │ ││
+│  │  │                                                           │ ││
+│  │  │  For incoming packets:                                    │ ││
+│  │  │  1. Receive encapsulated packets on UDP:4789             │ ││
+│  │  │  2. Decapsulate: Remove outer headers                    │ ││
+│  │  │  3. Forward original packet to local pod                 │ ││
+│  │  └───────────────────────────────────────────────────────────┘ ││
+│  │      │                                                          ││
+│  │      │ Encapsulated packet (UDP:4789)                          ││
+│  │      ▼                                                          ││
+│  │                                                                 ││
+│  │  eth0 (192.168.1.10) ──────────► Physical Network              ││
+│  │                                                                 ││
+│  └────────────────────────────────────────────────────────────────┘│
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-# Example:
-# 5a:46:3a:xx:xx:xx dev flannel.1 dst 192.168.1.11 self permanent
+### VXLAN Packet Structure
+
+Here's the detailed structure of a VXLAN packet:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    VXLAN PACKET ANATOMY                              │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              OUTER ETHERNET HEADER (14 bytes)               │   │
+│  │  Dst MAC: Node 2's MAC                                      │   │
+│  │  Src MAC: Node 1's MAC                                      │   │
+│  │  Type: 0x0800 (IPv4)                                        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              OUTER IP HEADER (20 bytes)                     │   │
+│  │  Source: 192.168.1.10 (Node 1)                             │   │
+│  │  Dest: 192.168.1.11 (Node 2)                               │   │
+│  │  Protocol: 17 (UDP)                                          │   │
+│  │  TTL: 64                                                     │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              UDP HEADER (8 bytes)                           │   │
+│  │  Source Port: (hash-based, varies)                          │   │
+│  │  Dest Port: 4789 (VXLAN standard port)                     │   │
+│  │  Length: (size of VXLAN + inner packet)                    │   │
+│  │  Checksum: (optional)                                        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              VXLAN HEADER (8 bytes)                         │   │
+│  │  Flags: 0x08 (VNI valid)                                    │   │
+│  │  VNI: 1 (Virtual Network Identifier)                        │   │
+│  │  Reserved: 0                                                 │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              INNER ETHERNET HEADER (14 bytes)               │   │
+│  │  (Original pod's ethernet frame)                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              INNER IP HEADER (20 bytes)                     │   │
+│  │  Source: 10.244.0.5 (Pod A)                                │   │
+│  │  Dest: 10.244.1.7 (Pod B)                                  │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              TCP/UDP + DATA                                  │   │
+│  │  (Original application data)                                 │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Total overhead: 50 bytes (14+20+8+8 = 50)                         │
+│  If original MTU is 1500, inner packet must be ≤ 1450             │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### MTU Considerations
+
+Because of the encapsulation overhead, the available space for the original packet is reduced. This is called **MTU (Maximum Transmission Unit)** reduction:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                       MTU IMPACT                                     │
+│                                                                      │
+│  Standard Ethernet MTU: 1500 bytes                                  │
+│                                                                      │
+│  With VXLAN overhead (50 bytes):                                    │
+│  Available for inner packet: 1500 - 50 = 1450 bytes                │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │        1500 bytes (total frame)                            │    │
+│  │ ┌──────────┐ ┌───────────────────────────────────────────┐ │    │
+│  │ │ Overhead │ │  Inner packet (max 1450 bytes)            │ │    │
+│  │ │ 50 bytes │ │                                           │ │    │
+│  │ └──────────┘ └───────────────────────────────────────────┘ │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  Why this matters:                                                   │
+│  • If a pod sends a 1500-byte packet, it won't fit!                │
+│  • Either the packet is fragmented (bad for performance)           │
+│  • Or the CNI sets pod MTU to 1450 (better solution)               │
+│                                                                      │
+│  Flannel example:                                                    │
+│  Pod's eth0 MTU: 1450 bytes (auto-configured)                      │
+│  This ensures packets always fit after encapsulation.              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -214,256 +363,327 @@ bridge fdb show dev flannel.1
 
 ### What is IPIP?
 
-IPIP (IP-in-IP) is simpler than VXLAN - it just wraps IP packets inside other IP packets.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         IPIP PACKET STRUCTURE                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  OUTER IP HEADER                                                 │   │
-│  │  [Src: 192.168.1.10] [Dst: 192.168.1.11] [Proto: 4 (IP-in-IP)]  │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  INNER IP HEADER (Original)                                      │   │
-│  │  [Src: 10.0.1.5] [Dst: 10.0.2.10] [Proto: TCP]                  │   │
-│  ├─────────────────────────────────────────────────────────────────┤   │
-│  │  INNER PAYLOAD (TCP + Data)                                      │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Overhead: 20 bytes (outer IP header only)                              │
-│  More efficient than VXLAN!                                              │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+**IPIP** (IP-in-IP) is a simpler encapsulation method used by Calico. It wraps an IP packet inside another IP packet (no UDP, no Ethernet).
 
 ### IPIP vs VXLAN
 
-```mermaid
-flowchart LR
-    subgraph VXLAN["VXLAN"]
-        V1["50 byte overhead"]
-        V2["L2 in L3 (UDP)"]
-        V3["Works through NAT"]
-    end
-    
-    subgraph IPIP["IPIP"]
-        I1["20 byte overhead"]
-        I2["L3 in L3"]
-        I3["May be blocked"]
-    end
-    
-    style VXLAN fill:#4285f4,stroke:#fff,color:#fff
-    style IPIP fill:#ff6b35,stroke:#fff,color:#fff
+| Feature | VXLAN | IPIP |
+|---------|-------|------|
+| **Encapsulates** | Layer 2 (Ethernet) | Layer 3 (IP only) |
+| **Protocol** | UDP (port 4789) | Protocol 4 |
+| **Overhead** | 50 bytes | 20 bytes |
+| **Firewall** | Usually allowed (UDP) | Sometimes blocked |
+| **Use case** | Most environments | When you need less overhead |
+
+### IPIP Packet Structure
+
+IPIP is simpler than VXLAN - it just adds one IP header:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      IPIP PACKET ANATOMY                             │
+│                                                                      │
+│  Original packet:                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ IP Header: Src=10.244.0.5, Dst=10.244.1.7 │ TCP │ Data     │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  After IPIP encapsulation:                                          │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │         OUTER IP HEADER (20 bytes)                          │   │
+│  │  Source: 192.168.1.10 (Node 1)                             │   │
+│  │  Dest: 192.168.1.11 (Node 2)                               │   │
+│  │  Protocol: 4 (IPIP)  ◄── This tells receiver it's IPIP    │   │
+│  │  TTL: 64                                                    │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │         INNER IP HEADER (original)                          │   │
+│  │  Source: 10.244.0.5 (Pod A)                                │   │
+│  │  Dest: 10.244.1.7 (Pod B)                                  │   │
+│  │  Protocol: 6 (TCP)                                          │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │         TCP + DATA (original)                               │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Total overhead: Only 20 bytes (just one extra IP header)          │
+│  Much more efficient than VXLAN!                                    │
+│                                                                      │
+│  But: Some firewalls block protocol 4, while UDP usually works.    │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### IPIP in Calico
+### When to Use IPIP
 
-```bash
-# Calico uses IPIP by default
-# View IPIP tunnel interface
+Use IPIP when:
+- Your network allows protocol 4 (IPIP)
+- You want lower overhead (20 bytes vs 50 bytes)
+- You're using Calico and want best performance without BGP
 
-minikube ssh
-
-# Show tunl0 interface
-ip -d link show tunl0
-
-# View routes using IPIP
-ip route | grep tunl0
-
-# Example output:
-# 10.0.2.0/24 via 192.168.1.11 dev tunl0 proto bird onlink
-```
+Avoid IPIP when:
+- Firewalls block protocol 4
+- You're in a cloud that doesn't support IPIP
+- You need VXLAN's Layer 2 features
 
 ---
 
 ## BGP Native Routing
 
-### What is BGP Routing?
+### What is BGP Native Routing?
 
-BGP (Border Gateway Protocol) advertises pod routes to the physical network - no encapsulation needed!
+Instead of encapsulating packets, **BGP (Border Gateway Protocol)** native routing teaches the physical network how to route pod IPs directly. This eliminates all encapsulation overhead!
+
+### How BGP Works
+
+BGP is the protocol that runs the internet. It lets routers share information about which networks they can reach:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      BGP ROUTING EXPLAINED                           │
+│                                                                      │
+│  With overlay (VXLAN/IPIP):                                         │
+│  ─────────────────────────────                                       │
+│  • Routers don't know about pod IPs (10.244.x.x)                   │
+│  • We hide pod packets inside node packets                          │
+│  • Adds overhead and complexity                                      │
+│                                                                      │
+│  With BGP:                                                           │
+│  ──────────                                                          │
+│  • Each node tells routers: "I can reach 10.244.X.0/24"            │
+│  • Routers add these routes to their tables                         │
+│  • Pod packets travel directly - no encapsulation!                  │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                         Router                                │  │
+│  │                                                               │  │
+│  │  Routing Table:                                               │  │
+│  │  ┌─────────────────────────────────────────────────────────┐ │  │
+│  │  │  Destination      │  Next Hop        │  Interface       │ │  │
+│  │  │  10.244.0.0/24   │  192.168.1.10    │  eth0 (Node 1)  │ │  │
+│  │  │  10.244.1.0/24   │  192.168.1.11    │  eth0 (Node 2)  │ │  │
+│  │  │  10.244.2.0/24   │  192.168.1.12    │  eth0 (Node 3)  │ │  │
+│  │  └─────────────────────────────────────────────────────────┘ │  │
+│  │                                                               │  │
+│  │  "Ah! For 10.244.1.7, send to Node 2 (192.168.1.11)"        │  │
+│  │                                                               │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  Benefits:                                                           │
+│  ✓ Zero encapsulation overhead                                      │
+│  ✓ Wire-speed performance                                           │
+│  ✓ Standard debugging tools work (tcpdump shows real packets)      │
+│                                                                      │
+│  Requirements:                                                       │
+│  ✗ Network infrastructure must support BGP                         │
+│  ✗ More complex network setup                                       │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### BGP with Calico
+
+Calico uses BGP by default when possible. Each node runs a BGP daemon (BIRD) that peers with other nodes or with network routers:
 
 ```mermaid
 flowchart TB
     subgraph Cluster["Kubernetes Cluster"]
-        Node1["Node 1\n10.0.1.0/24"]
-        Node2["Node 2\n10.0.2.0/24"]
-        Node3["Node 3\n10.0.3.0/24"]
+        subgraph Node1["Node 1"]
+            BIRD1["BIRD<br/>(BGP Daemon)<br/>─────────<br/>Advertises:<br/>10.244.0.0/24"]
+            Pods1["Pods<br/>10.244.0.x"]
+        end
+        
+        subgraph Node2["Node 2"]
+            BIRD2["BIRD<br/>(BGP Daemon)<br/>─────────<br/>Advertises:<br/>10.244.1.0/24"]
+            Pods2["Pods<br/>10.244.1.x"]
+        end
+        
+        subgraph Node3["Node 3"]
+            BIRD3["BIRD<br/>(BGP Daemon)<br/>─────────<br/>Advertises:<br/>10.244.2.0/24"]
+            Pods3["Pods<br/>10.244.2.x"]
+        end
     end
     
-    subgraph Network["Physical Network"]
-        Router["Leaf Router"]
-        Spine["Spine Router"]
-    end
+    TOR["ToR Switch/Router<br/>(Route Reflector)"]
     
-    Node1 <-->|"BGP Peer"| Router
-    Node2 <-->|"BGP Peer"| Router
-    Node3 <-->|"BGP Peer"| Router
-    Router <--> Spine
+    BIRD1 <-->|"BGP"| TOR
+    BIRD2 <-->|"BGP"| TOR
+    BIRD3 <-->|"BGP"| TOR
     
     style Cluster fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style Network fill:#f1fa8c,stroke:#ffb86c,color:#282a36
+    style TOR fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
 ```
 
-### BGP Flow
+**How it works:**
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           BGP ROUTING                                    │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  Step 1: Route Advertisement                                             │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Node 1 (BIRD) ──► Router: "I have 10.0.1.0/24, next-hop me"    │   │
-│  │  Node 2 (BIRD) ──► Router: "I have 10.0.2.0/24, next-hop me"    │   │
-│  │  Node 3 (BIRD) ──► Router: "I have 10.0.3.0/24, next-hop me"    │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Step 2: Router learns routes                                            │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Router Table:                                                   │   │
-│  │  ┌────────────────┬─────────────────────────────┐               │   │
-│  │  │ Destination    │ Next Hop                    │               │   │
-│  │  ├────────────────┼─────────────────────────────┤               │   │
-│  │  │ 10.0.1.0/24    │ 192.168.1.10 (Node 1)      │               │   │
-│  │  │ 10.0.2.0/24    │ 192.168.1.11 (Node 2)      │               │   │
-│  │  │ 10.0.3.0/24    │ 192.168.1.12 (Node 3)      │               │   │
-│  │  └────────────────┴─────────────────────────────┘               │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Step 3: Native Routing (No Encapsulation!)                             │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Pod A (10.0.1.5) sends to Pod C (10.0.2.10)                    │   │
-│  │                                                                  │   │
-│  │  Packet: [Src: 10.0.1.5] [Dst: 10.0.2.10] [Data]                │   │
-│  │          └── No outer header! Native IP packet                  │   │
-│  │                                                                  │   │
-│  │  Flow: Node 1 → Router (routes to Node 2) → Node 2 → Pod C     │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Benefits: No overhead, wire-speed performance, simple packet traces    │
-│  Requires: Network infrastructure that supports BGP peering             │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+1. **BIRD daemon** on each node advertises its pod CIDR (e.g., "I have 10.244.0.0/24")
+2. **BGP peering** shares routes between nodes (or via a route reflector)
+3. **Physical routers** learn pod routes and can forward directly
+4. **No encapsulation** - packets travel with their original headers
+
+### BGP Peering Options
+
+| Option | Description | Use When |
+|--------|-------------|----------|
+| **Full Mesh** | Every node peers with every other node | Small clusters (< 100 nodes) |
+| **Route Reflector** | Nodes peer with central reflector(s) | Large clusters |
+| **ToR Peering** | Nodes peer with Top-of-Rack switch | Data center deployments |
 
 ---
 
-## Comparison
+## Comparison and Use Cases
 
-### Feature Matrix
+### Side-by-Side Comparison
 
 | Feature | VXLAN | IPIP | BGP |
 |---------|-------|------|-----|
-| **Encapsulation** | L2 in UDP | IP in IP | None |
 | **Overhead** | 50 bytes | 20 bytes | 0 bytes |
 | **Performance** | Good | Better | Best |
-| **Network Requirements** | Any | Any | BGP support |
-| **NAT Traversal** | Yes | Sometimes | No |
+| **Works on any network** | ✅ Yes | ⚠️ Usually | ❌ No |
+| **Firewall friendly** | ✅ UDP | ⚠️ Protocol 4 | ⚠️ TCP 179 |
 | **Debugging** | Harder | Medium | Easiest |
+| **Setup complexity** | Easy | Easy | Complex |
+| **Cloud support** | ✅ All | ⚠️ Most | ⚠️ Some |
 
-### Performance Comparison
+### Decision Guide
 
-```mermaid
-xychart-beta
-    title "Overhead Comparison (Lower is Better)"
-    x-axis ["BGP (Native)", "IPIP", "VXLAN"]
-    y-axis "Bytes Overhead" 0 --> 60
-    bar [0, 20, 50]
+Here's how to choose the right approach:
+
 ```
-
-### When to Use Each
-
-```mermaid
-flowchart TB
-    Start["Choose Encapsulation"] --> Q1{"Have BGP\nInfrastructure?"}
-    
-    Q1 -->|Yes| BGP["✅ BGP\nBest performance"]
-    Q1 -->|No| Q2{"Need NAT\nTraversal?"}
-    
-    Q2 -->|Yes| VXLAN["✅ VXLAN\nWorks through NAT"]
-    Q2 -->|No| IPIP["✅ IPIP\nGood balance"]
-    
-    style BGP fill:#50fa7b,stroke:#8be9fd,color:#282a36
-    style IPIP fill:#ff6b35,stroke:#fff,color:#fff
-    style VXLAN fill:#4285f4,stroke:#fff,color:#fff
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CHOOSING YOUR APPROACH                            │
+│                                                                      │
+│  Question 1: Does your network support BGP?                        │
+│  ├── Yes, I control the routers ──────────► Use BGP (best perf)    │
+│  └── No / Not sure ─────────────────────────┐                       │
+│                                              │                       │
+│  Question 2: Does your network allow IPIP (protocol 4)?            │
+│  ├── Yes ────────────────────────────────► Use IPIP (low overhead) │
+│  └── No / Not sure ─────────────────────────┐                       │
+│                                              │                       │
+│  Question 3: ────────────────────────────► Use VXLAN (works always)│
+│                                                                      │
+│                                                                      │
+│  Common Scenarios:                                                   │
+│  ─────────────────                                                   │
+│  • Public cloud (AWS/GCP/Azure) ──────────► VXLAN or cloud CNI     │
+│  • On-premises with BGP routers ──────────► BGP native             │
+│  • Simple home lab ───────────────────────► VXLAN (Flannel)        │
+│  • High performance required ─────────────► BGP or IPIP            │
+│  • Mixed/unknown environment ─────────────► VXLAN (safest)         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Minikube Multi-Node Lab
+## Multi-Node Lab with Minikube
 
-### Set Up Multi-Node Cluster
+### Setting Up Multi-Node Cluster
+
+Let's create a multi-node Minikube cluster to explore cross-node networking:
 
 ```bash
-# Create multi-node Minikube cluster
+# Delete any existing cluster
+minikube delete
+
+# Create a 2-node cluster with Calico
 minikube start --nodes 2 --cni=calico
 
-# Verify nodes
+# Wait for all nodes to be ready
 kubectl get nodes
-
-# Output:
 # NAME           STATUS   ROLES           AGE   VERSION
-# minikube       Ready    control-plane   1m    v1.28.0
-# minikube-m02   Ready    <none>          30s   v1.28.0
+# minikube       Ready    control-plane   2m    v1.28.0
+# minikube-m02   Ready    <none>          1m    v1.28.0
+
+# Wait for Calico to be ready on both nodes
+kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=300s
 ```
 
-### Create Test Pods on Different Nodes
+### Creating Test Pods on Different Nodes
 
 ```yaml
 # File: cross-node-test.yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: pod-node1
+  name: pod-on-node1
+  labels:
+    app: test
 spec:
-  nodeName: minikube
+  nodeName: minikube  # Force to node 1
   containers:
-  - name: alpine
-    image: alpine
+  - name: netshoot
+    image: nicolaka/netshoot
     command: ['sleep', '3600']
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: pod-node2
+  name: pod-on-node2
+  labels:
+    app: test
 spec:
-  nodeName: minikube-m02
+  nodeName: minikube-m02  # Force to node 2
   containers:
-  - name: alpine
-    image: alpine
+  - name: netshoot
+    image: nicolaka/netshoot
     command: ['sleep', '3600']
 ```
 
-### Test Cross-Node Connectivity
-
 ```bash
-# Apply the test pods
+# Apply the config
 kubectl apply -f cross-node-test.yaml
+
+# Wait for pods
+kubectl wait --for=condition=ready pod/pod-on-node1 pod/pod-on-node2
 
 # Get pod IPs
 kubectl get pods -o wide
-
-# Test connectivity
-kubectl exec pod-node1 -- ping -c 3 <pod-node2-ip>
-
-# Trace the path
-kubectl exec pod-node1 -- traceroute <pod-node2-ip>
+# NAME           READY   IP            NODE
+# pod-on-node1   1/1     10.244.0.65   minikube
+# pod-on-node2   1/1     10.244.1.10   minikube-m02
 ```
 
-### Observe Encapsulation
+### Testing Cross-Node Connectivity
 
 ```bash
-# SSH to first node
+# Test ping from node1 to node2
+kubectl exec pod-on-node1 -- ping -c 3 10.244.1.10
+
+# Test ping from node2 to node1
+kubectl exec pod-on-node2 -- ping -c 3 10.244.0.65
+
+# Traceroute to see the path
+kubectl exec pod-on-node1 -- traceroute 10.244.1.10
+```
+
+### Observing Encapsulation
+
+```bash
+# SSH into node 1
 minikube ssh
 
-# Capture IPIP traffic
-sudo tcpdump -i eth0 'ip proto 4' -n
+# Watch for VXLAN traffic (if using VXLAN)
+sudo tcpdump -i eth0 'udp port 4789' -n -c 5
 
-# In another terminal, trigger traffic
-kubectl exec pod-node1 -- ping -c 5 <pod-node2-ip>
+# Or watch for IPIP traffic (if using Calico IPIP)
+sudo tcpdump -i eth0 'ip proto 4' -n -c 5
 
-# You'll see encapsulated packets!
+# In another terminal, generate traffic
+kubectl exec pod-on-node1 -- ping -c 5 10.244.1.10
+
+# You'll see the encapsulated packets!
+```
+
+### Checking Calico's Mode
+
+```bash
+# Check which mode Calico is using
+kubectl get ippools -o yaml | grep -A5 "ipipMode\|vxlanMode"
+
+# Check from inside Calico node
+kubectl exec -n kube-system -it $(kubectl get pod -n kube-system -l k8s-app=calico-node -o name | head -1) -c calico-node -- calico-node -show-status
 ```
 
 ---
@@ -471,12 +691,24 @@ kubectl exec pod-node1 -- ping -c 5 <pod-node2-ip>
 ## Key Takeaways
 
 > [!IMPORTANT]
-> 1. **Overlay networks** encapsulate pod traffic for cross-node delivery
-> 2. **VXLAN** wraps L2 in UDP - works anywhere, 50 byte overhead
-> 3. **IPIP** wraps L3 in L3 - simpler, 20 byte overhead
-> 4. **BGP** advertises routes - no encapsulation, best performance
-> 5. **Choose based on** network infrastructure and requirements
+> **Remember these key points about Cross-Node Networking:**
+> 
+> 1. **Overlay networks** (VXLAN, IPIP) wrap pod packets in node packets
+> 2. **VXLAN** is most compatible (UDP), **IPIP** has less overhead
+> 3. **BGP native routing** gives best performance but requires network support
+> 4. **MTU reduction** is important - overlays need smaller inner packets
+> 5. **Choose based on your environment** - cloud usually needs overlay, data center can use BGP
 
 ---
 
-**[Next: Chapter 6 - Minikube CNI Lab →](06-minikube-cni-lab.md)**
+## What's Next?
+
+Now it's time to put everything together with hands-on labs:
+
+**[Chapter 6: Minikube CNI Lab →](06-minikube-cni-lab.md)**
+
+You'll work through:
+- Exploring default CNI configuration
+- Installing and comparing different CNIs
+- Debugging network issues
+- Performance testing

@@ -127,30 +127,40 @@ Every pod's network namespace has these components:
 
 Here's how to see network namespaces on a Kubernetes node:
 
+> [!NOTE]
+> Modern container runtimes (containerd, CRI-O) don't create named namespaces in `/var/run/netns/`. 
+> The command `ip netns list` may return empty even when pods are running. Use the methods below instead.
+
 ```bash
 # SSH into Minikube
 minikube ssh
 
-# List all network namespaces (requires root)
-sudo ip netns list
+# Method 1: Use lsns to list all network namespaces (RECOMMENDED)
+sudo lsns -t net
 
 # You'll see output like:
-# cni-12345678-90ab-cdef-1234-567890abcdef (id: 0)
-# cni-abcdefgh-ijkl-mnop-qrst-uvwxyz123456 (id: 1)
+#         NS TYPE NPROCS   PID USER    COMMAND
+# 4026531992 net     100     1 root    /sbin/init
+# 4026532285 net       2  1234 65535   /pause      <-- Pod namespace!
+# 4026532356 net       2  5678 65535   /pause      <-- Another pod!
 
-# Each of these is a pod's network namespace!
+# Method 2: Enter a pod's network namespace using nsenter
+# First, find a container's PID
+POD_PID=$(sudo crictl inspect $(sudo crictl ps -q | head -1) 2>/dev/null | grep '"pid":' | head -1 | awk '{print $2}' | tr -d ',')
 
-# Look inside a namespace (replace with actual namespace name)
-NETNS="cni-12345678-90ab-cdef-1234-567890abcdef"
+# Enter that namespace and run commands
+sudo nsenter -t $POD_PID -n ip addr show
+sudo nsenter -t $POD_PID -n ip route show
+sudo nsenter -t $POD_PID -n ss -tlnp
 
-# See interfaces in that namespace
-sudo ip netns exec $NETNS ip addr show
+# Method 3: Use crictl to find container network info
+sudo crictl ps                              # List containers
+sudo crictl inspect <container-id>          # Get details including namespace
 
-# See routing table in that namespace
-sudo ip netns exec $NETNS ip route show
-
-# See what ports are open in that namespace
-sudo ip netns exec $NETNS ss -tlnp
+# Method 4: If ip netns works (some CNIs create named namespaces)
+sudo ip netns list
+# If this shows namespaces like cni-xxx, you can use:
+sudo ip netns exec <namespace-name> ip addr show
 ```
 
 ---
@@ -683,20 +693,22 @@ kubectl exec pod-a -- curl -s http://<pod-b-ip>
 # SSH into Minikube
 minikube ssh
 
-# List namespaces
-sudo ip netns list
+# List all network namespaces (modern method)
+sudo lsns -t net
 
-# Pick one and explore
-NS="<namespace-from-list>"
+# Find a pod's PID and enter its namespace
+# First, get a container PID
+POD_PID=$(sudo crictl inspect $(sudo crictl ps -q | head -1) 2>/dev/null | grep '"pid":' | head -1 | awk '{print $2}' | tr -d ',')
+echo "Pod PID: $POD_PID"
 
-# See interfaces
-sudo ip netns exec $NS ip addr
+# See interfaces in that namespace
+sudo nsenter -t $POD_PID -n ip addr
 
-# See routes
-sudo ip netns exec $NS ip route
+# See routes in that namespace
+sudo nsenter -t $POD_PID -n ip route
 
-# See ARP cache
-sudo ip netns exec $NS ip neigh
+# See ARP cache in that namespace
+sudo nsenter -t $POD_PID -n ip neigh
 ```
 
 ---

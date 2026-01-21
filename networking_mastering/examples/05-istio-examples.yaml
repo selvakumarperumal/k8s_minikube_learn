@@ -1,24 +1,28 @@
 # ============================================================================
-# ISTIO SERVICE MESH - Complete Examples
+# ISTIO SERVICE MESH - Complete Examples (with Gateway API)
 # ============================================================================
-# This file contains Istio configuration examples
+# This file contains Istio configuration examples using Kubernetes Gateway API
 #
 # PREREQUISITES:
 # --------------
 # 1. Start Minikube with enough resources:
 #    minikube start --cpus=4 --memory=8192
 #
-# 2. Install Istio:
+# 2. Install Kubernetes Gateway API CRDs:
+#    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+#
+# 3. Install Istio:
 #    curl -L https://istio.io/downloadIstio | sh -
 #    cd istio-*
 #    export PATH=$PWD/bin:$PATH
 #    istioctl install --set profile=demo -y
 #
-# 3. Enable sidecar injection:
-#    kubectl label namespace default istio-injection=enabled
+# 4. Verify Gateway API GatewayClass:
+#    kubectl get gatewayclass
+#    # Should show: istio   istio.io/gateway-controller   True
 #
-# 4. Verify:
-#    kubectl get pods -n istio-system
+# 5. Enable sidecar injection:
+#    kubectl label namespace default istio-injection=enabled
 #
 # HOW TO RUN:
 # -----------
@@ -28,9 +32,12 @@
 # 2. Wait for pods:
 #    kubectl wait --for=condition=ready pod --all --timeout=120s
 #
-# 3. Test (see individual examples)
+# 3. Get Gateway address:
+#    kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}'
 #
-# 4. Cleanup:
+# 4. Test (see individual examples)
+#
+# 5. Cleanup:
 #    kubectl delete -f 05-istio-examples.yaml
 #
 # ============================================================================
@@ -123,50 +130,99 @@ spec:
 
 ---
 # ============================================================================
-# EXAMPLE 1: Gateway (Entry Point for External Traffic)
+# EXAMPLE 1: Gateway (Kubernetes Gateway API)
 # ============================================================================
-# Gateway defines ports/protocols for external access
+# Modern way to define external traffic entry point in Istio
+# Uses standard Kubernetes Gateway API instead of Istio-specific Gateway
 
-apiVersion: networking.istio.io/v1beta1
+apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: myapp-gateway
 spec:
   # ---------------------------------------------------------------------------
-  # selector: Which Istio gateway to configure
+  # gatewayClassName: Use Istio's Gateway controller
   # ---------------------------------------------------------------------------
-  selector:
-    istio: ingressgateway # Default Istio ingress gateway
+  # Istio automatically registers this GatewayClass
+  gatewayClassName: istio
 
   # ---------------------------------------------------------------------------
-  # servers: Ports and protocols to accept
+  # listeners: Define ports, protocols, and TLS
   # ---------------------------------------------------------------------------
-  servers:
-    # HTTP server on port 80
-    - port:
-        number: 80
-        name: http
-        protocol: HTTP
-      hosts:
-        - "*" # Accept all hosts (for demo)
-        # - "myapp.example.com"  # Or specific host
+  listeners:
+    # HTTP listener on port 80
+    - name: http
+      protocol: HTTP
+      port: 80
+      # Which routes can attach to this listener
+      allowedRoutes:
+        namespaces:
+          from: Same # Only routes from same namespace
+
+# NOTE: When you create this Gateway, Istio automatically:
+# - Creates a Deployment (gateway pods)
+# - Creates a Service (LoadBalancer type)
+# - No need for istio-ingressgateway!
 
 # HOW TO TEST:
 # ------------
-# # Get Istio ingress IP/Port
-# export INGRESS_HOST=$(minikube ip)
-# export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+# # Wait for Gateway to be programmed
+# kubectl wait --for=condition=programmed gateway myapp-gateway --timeout=60s
 #
-# echo "URL: http://$INGRESS_HOST:$INGRESS_PORT"
+# # Get Gateway address
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
+# echo "Gateway IP: $GATEWAY_IP"
 #
-# # Test (after VirtualService is applied)
-# curl http://$INGRESS_HOST:$INGRESS_PORT
+# # For Minikube, start tunnel in separate terminal:
+# minikube tunnel
+#
+# # Test (after HTTPRoute/VirtualService is applied)
+# curl http://$GATEWAY_IP
 
 ---
 # ============================================================================
-# EXAMPLE 2: VirtualService - All Traffic to V1
+# EXAMPLE 2: HTTPRoute - Simple Routing (Gateway API)
 # ============================================================================
-# Route 100% of traffic to version 1
+# Pure Gateway API routing without VirtualService
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: myapp-route-simple
+spec:
+  # ---------------------------------------------------------------------------
+  # parentRefs: Attach to Gateway
+  # ---------------------------------------------------------------------------
+  parentRefs:
+    - name: myapp-gateway
+
+  # ---------------------------------------------------------------------------
+  # rules: Define routing
+  # ---------------------------------------------------------------------------
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: myapp
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# # Get Gateway IP
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
+#
+# # Test
+# curl http://$GATEWAY_IP
+# # Output: Hello from VERSION 1! or VERSION 2! (load balanced)
+
+---
+# ============================================================================
+# EXAMPLE 3: VirtualService - All Traffic to V1 (with Gateway API Gateway)
+# ============================================================================
+# VirtualService works with Kubernetes Gateway API Gateway
+# Use VirtualService when you need subset routing or advanced features
 
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -180,10 +236,10 @@ spec:
     - myapp # Internal service name
 
   # ---------------------------------------------------------------------------
-  # gateways: Apply to these gateways
+  # gateways: Reference to K8s Gateway API Gateway
   # ---------------------------------------------------------------------------
   gateways:
-    - myapp-gateway # External traffic via gateway
+    - myapp-gateway # K8s Gateway API Gateway (same namespace)
     - mesh # Internal mesh traffic
 
   # ---------------------------------------------------------------------------
@@ -202,14 +258,15 @@ spec:
 # kubectl apply -f <this-section>
 #
 # # Test multiple times - should always return V1
-# for i in {1..10}; do curl -s http://$INGRESS_HOST:$INGRESS_PORT; done
+# for i in {1..10}; do curl -s http://$GATEWAY_IP; done
 # # Output: Hello from VERSION 1! (10 times)
 
 ---
 # ============================================================================
-# EXAMPLE 3: DestinationRule - Define Subsets (Versions)
+# EXAMPLE 4: DestinationRule - Define Subsets (Versions)
 # ============================================================================
 # Subsets define how to identify different versions
+# Required for VirtualService subset routing
 
 apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
@@ -237,9 +294,35 @@ spec:
 
 ---
 # ============================================================================
-# EXAMPLE 4: VirtualService - Canary Deployment (90/10)
+# EXAMPLE 5: HTTPRoute - Canary Deployment (90/10) - Gateway API
 # ============================================================================
-# Route 90% to v1, 10% to v2 (canary)
+# Pure Gateway API traffic splitting without VirtualService
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: myapp-canary-httproute
+spec:
+  parentRefs:
+    - name: myapp-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        # Note: With HTTPRoute, you need separate Services for each version
+        # Or use VirtualService with DestinationRule subsets (next example)
+        - name: myapp # This will load-balance across all pods
+          port: 80
+
+# For true canary with subsets, use VirtualService below:
+
+---
+# ============================================================================
+# EXAMPLE 6: VirtualService - Canary Deployment (90/10)
+# ============================================================================
+# Route 90% to v1, 10% to v2 (canary) - requires DestinationRule subsets
 
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -249,7 +332,7 @@ spec:
   hosts:
     - myapp
   gateways:
-    - myapp-gateway
+    - myapp-gateway # K8s Gateway API Gateway
     - mesh
   http:
     - route:
@@ -264,18 +347,18 @@ spec:
 
 # HOW TO TEST:
 # ------------
-# # Apply this VirtualService (removes previous one)
-# kubectl apply -f <this-section>
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
 #
 # # Test multiple times - should see ~90% v1, ~10% v2
-# for i in {1..20}; do curl -s http://$INGRESS_HOST:$INGRESS_PORT; done
+# for i in {1..20}; do curl -s http://$GATEWAY_IP; done
 # # Mix of VERSION 1 and VERSION 2 responses
 
 ---
 # ============================================================================
-# EXAMPLE 5: VirtualService - Header-Based Routing
+# EXAMPLE 7: VirtualService - Header-Based Routing
 # ============================================================================
 # Route based on HTTP headers (A/B testing, feature flags)
+# VirtualService is needed for header-based routing with subsets
 
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -285,7 +368,7 @@ spec:
   hosts:
     - myapp
   gateways:
-    - myapp-gateway
+    - myapp-gateway # K8s Gateway API Gateway
     - mesh
   http:
     # ---------------------------------------------------------------------------
@@ -322,24 +405,23 @@ spec:
 
 # HOW TO TEST:
 # ------------
-# # Apply this VirtualService
-# kubectl apply -f <this-section>
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
 #
 # # Default - goes to v1
-# curl http://$INGRESS_HOST:$INGRESS_PORT
+# curl http://$GATEWAY_IP
 # # Output: Hello from VERSION 1!
 #
 # # With x-version header - goes to v2
-# curl -H "x-version: v2" http://$INGRESS_HOST:$INGRESS_PORT
+# curl -H "x-version: v2" http://$GATEWAY_IP
 # # Output: Hello from VERSION 2!
 #
 # # With x-user-type header - goes to v2
-# curl -H "x-user-type: beta" http://$INGRESS_HOST:$INGRESS_PORT
+# curl -H "x-user-type: beta" http://$GATEWAY_IP
 # # Output: Hello from VERSION 2!
 
 ---
 # ============================================================================
-# EXAMPLE 6: VirtualService - Path-Based Routing
+# EXAMPLE 8: VirtualService - Path-Based Routing
 # ============================================================================
 # Different paths go to different versions
 
@@ -351,7 +433,7 @@ spec:
   hosts:
     - myapp
   gateways:
-    - myapp-gateway
+    - myapp-gateway # K8s Gateway API Gateway
   http:
     # ---------------------------------------------------------------------------
     # /v2/* goes to v2
@@ -376,17 +458,20 @@ spec:
 
 # HOW TO TEST:
 # ------------
-# curl http://$INGRESS_HOST:$INGRESS_PORT/
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
+#
+# curl http://$GATEWAY_IP/
 # # Output: Hello from VERSION 1!
 #
-# curl http://$INGRESS_HOST:$INGRESS_PORT/v2/
+# curl http://$GATEWAY_IP/v2/
 # # Output: Hello from VERSION 2!
 
 ---
 # ============================================================================
-# EXAMPLE 7: DestinationRule - Circuit Breaker
+# EXAMPLE 9: DestinationRule - Circuit Breaker
 # ============================================================================
 # Protect service from cascading failures
+# Circuit breaker is an Istio-specific feature (not in Gateway API)
 
 apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
@@ -426,16 +511,14 @@ spec:
       labels:
         version: v2
 
-# HOW TO TEST:
-# ------------
-# # This protects against failing backends
-# # When a backend fails 5 times, it's ejected from load balancing
+# NOTE: Circuit breaker is an Istio-specific feature not available in Gateway API
 
 ---
 # ============================================================================
-# EXAMPLE 8: VirtualService - Retries and Timeouts
+# EXAMPLE 10: VirtualService - Retries and Timeouts
 # ============================================================================
 # Automatic retries and request timeouts
+# These are Istio-specific features not fully available in Gateway API yet
 
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -445,7 +528,7 @@ spec:
   hosts:
     - myapp
   gateways:
-    - myapp-gateway
+    - myapp-gateway # K8s Gateway API Gateway
     - mesh
   http:
     - route:
@@ -454,28 +537,26 @@ spec:
             subset: v1
 
       # ---------------------------------------------------------------------------
-      # timeout: Max request time
+      # timeout: Max request time (Istio-specific)
       # ---------------------------------------------------------------------------
       timeout: 10s
 
       # ---------------------------------------------------------------------------
-      # retries: Automatic retry on failure
+      # retries: Automatic retry on failure (Istio-specific)
       # ---------------------------------------------------------------------------
       retries:
         attempts: 3 # Retry up to 3 times
         perTryTimeout: 2s # Timeout per attempt
         retryOn: gateway-error,connect-failure,refused-stream,5xx
 
-# HOW TO TEST:
-# ------------
-# # Requests will be retried up to 3 times on failure
-# # Total timeout is 10 seconds
+# NOTE: Gateway API has basic timeout support, but retries are Istio-specific
 
 ---
 # ============================================================================
-# EXAMPLE 9: Fault Injection (Testing)
+# EXAMPLE 11: Fault Injection (Testing)
 # ============================================================================
 # Inject faults to test resilience
+# This is an Istio-specific feature for chaos testing
 
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -484,6 +565,8 @@ metadata:
 spec:
   hosts:
     - myapp
+  gateways:
+    - myapp-gateway # K8s Gateway API Gateway
   http:
     - route:
         - destination:
@@ -491,7 +574,7 @@ spec:
             subset: v1
 
       # ---------------------------------------------------------------------------
-      # fault: Inject failures for testing
+      # fault: Inject failures for testing (Istio-specific)
       # ---------------------------------------------------------------------------
       fault:
         # Inject delays
@@ -508,18 +591,20 @@ spec:
 
 # HOW TO TEST:
 # ------------
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
+#
 # # Some requests will be delayed or fail
 # for i in {1..20}; do
-#   time curl -s http://$INGRESS_HOST:$INGRESS_PORT
+#   time curl -s http://$GATEWAY_IP
 # done
 # # ~10% will take 5+ seconds
 # # ~5% will return error
 
 ---
 # ============================================================================
-# EXAMPLE 10: PeerAuthentication - Enable mTLS
+# EXAMPLE 12: PeerAuthentication - Enable mTLS
 # ============================================================================
-# Mutual TLS between services
+# Mutual TLS between services (Istio security feature)
 
 apiVersion: security.istio.io/v1beta1
 kind: PeerAuthentication
@@ -536,18 +621,14 @@ spec:
   mtls:
     mode: STRICT
 
-# HOW TO TEST:
-# ------------
-# # Verify mTLS is working
-# istioctl x authz check deployment/myapp-v1
-#
-# # Traffic between pods is now encrypted!
+# NOTE: mTLS works the same regardless of whether you use
+# Gateway API or Istio Gateway for ingress
 
 ---
 # ============================================================================
-# EXAMPLE 11: AuthorizationPolicy - Access Control
+# EXAMPLE 13: AuthorizationPolicy - Access Control
 # ============================================================================
-# Control which services can access which
+# Control which services can access which (Istio security feature)
 
 # Deny all by default
 apiVersion: security.istio.io/v1beta1
@@ -594,16 +675,13 @@ spec:
             methods: ["GET", "POST"]
             paths: ["/api/*", "/health"]
 
-# HOW TO TEST:
-# ------------
-# # Check authorization status
-# istioctl x authz check pod/myapp-v1-xxx
+# NOTE: AuthorizationPolicy works the same with Gateway API or Istio Gateway
 
 ---
 # ============================================================================
-# EXAMPLE 12: RequestAuthentication - JWT Validation
+# EXAMPLE 14: RequestAuthentication - JWT Validation
 # ============================================================================
-# Validate JWT tokens
+# Validate JWT tokens (Istio security feature)
 
 apiVersion: security.istio.io/v1beta1
 kind: RequestAuthentication
@@ -621,26 +699,40 @@ spec:
         - "myapp"
 # HOW TO TEST:
 # ------------
+# export GATEWAY_IP=$(kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}')
+#
 # # Requests without valid JWT will be rejected
-# curl http://$INGRESS_HOST:$INGRESS_PORT
+# curl http://$GATEWAY_IP
 # # 401 Unauthorized
 #
 # # With valid JWT
-# curl -H "Authorization: Bearer <token>" http://$INGRESS_HOST:$INGRESS_PORT
+# curl -H "Authorization: Bearer <token>" http://$GATEWAY_IP
 # # Success
 
 # ============================================================================
-# ISTIO COMMANDS CHEAT SHEET
+# ISTIO + GATEWAY API COMMANDS CHEAT SHEET
 # ============================================================================
+#
+# # Install Gateway API CRDs
+# kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
 #
 # # Install Istio
 # istioctl install --set profile=demo -y
 #
+# # Verify Gateway API GatewayClass
+# kubectl get gatewayclass
+#
+# # Get Gateway address
+# kubectl get gateway myapp-gateway -o jsonpath='{.status.addresses[0].value}'
+#
+# # Check Gateway status
+# kubectl describe gateway myapp-gateway
+#
+# # Check HTTPRoute status
+# kubectl describe httproute myapp-route
+#
 # # Enable injection
 # kubectl label namespace default istio-injection=enabled
-#
-# # Check injection
-# kubectl get namespace -L istio-injection
 #
 # # View proxy config
 # istioctl proxy-config routes deploy/myapp-v1

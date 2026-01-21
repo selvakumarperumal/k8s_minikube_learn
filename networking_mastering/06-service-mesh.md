@@ -159,6 +159,16 @@ minikube start --cpus=4 --memory=8192
 kubectl get nodes
 ```
 
+### Install Kubernetes Gateway API CRDs
+
+```bash
+# Install Gateway API CRDs (required for modern Istio)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+
+# Verify CRDs
+kubectl get crd | grep gateway
+```
+
 ### Install Istio
 
 ```bash
@@ -171,7 +181,7 @@ cd istio-*
 # Add istioctl to PATH
 export PATH=$PWD/bin:$PATH
 
-# Install Istio with demo profile
+# Install Istio with demo profile (includes Gateway API support)
 istioctl install --set profile=demo -y
 
 # Verify installation
@@ -179,6 +189,11 @@ kubectl get pods -n istio-system
 # NAME                                    READY   STATUS
 # istio-ingressgateway-xxx                1/1     Running
 # istiod-xxx                              1/1     Running
+
+# Verify Gateway API GatewayClass is created
+kubectl get gatewayclass
+# NAME    CONTROLLER                    ACCEPTED
+# istio   istio.io/gateway-controller   True
 ```
 
 ### Enable Sidecar Injection
@@ -206,76 +221,86 @@ kubectl apply -f <(istioctl kube-inject -f deployment.yaml)
 
 ### Core Resources
 
+Istio now supports the **Kubernetes Gateway API** as the preferred way to manage external traffic. VirtualService and DestinationRule are still used for advanced traffic management.
+
 ```mermaid
 flowchart LR
-    subgraph Resources["Istio Traffic Resources"]
-        GW["Gateway<br/>External entry"]
+    subgraph Resources["Traffic Resources"]
+        GW["Gateway (K8s API)<br/>External entry"]
         VS["VirtualService<br/>Routing rules"]
         DR["DestinationRule<br/>Policies"]
     end
     
     Traffic["Traffic"] --> GW --> VS --> DR --> Pods["Pods"]
     
-    style GW fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
+    style GW fill:#8be9fd,stroke:#50fa7b,color:#282a36
     style VS fill:#50fa7b,stroke:#8be9fd,color:#282a36
     style DR fill:#ffb86c,stroke:#f1fa8c,color:#282a36
 ```
 
-### Gateway
+### Gateway (Kubernetes Gateway API)
 
-Entry point for external traffic:
+Istio uses **Kubernetes Gateway API** for external traffic entry. This replaces the legacy `networking.istio.io/v1beta1 Gateway`:
 
 ```yaml
 # ============================================================================
-# ISTIO GATEWAY
+# KUBERNETES GATEWAY API - Entry Point
 # ============================================================================
-# Configures the Istio ingress gateway to accept traffic
+# Modern, portable way to configure external traffic in Istio
+# Replaces: networking.istio.io/v1beta1 Gateway
 
-apiVersion: networking.istio.io/v1beta1
+apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: my-gateway
+  namespace: default
 spec:
   # ---------------------------------------------------------------------------
-  # SELECTOR: Which gateway pods to configure
+  # gatewayClassName: Use Istio's Gateway controller
   # ---------------------------------------------------------------------------
-  selector:
-    istio: ingressgateway  # Use default Istio gateway
+  gatewayClassName: istio  # Istio automatically creates this GatewayClass
   
   # ---------------------------------------------------------------------------
-  # SERVERS: Ports and protocols to listen on
+  # listeners: Define ports, protocols, TLS
   # ---------------------------------------------------------------------------
-  servers:
-    # HTTP server
-    - port:
-        number: 80
-        name: http
-        protocol: HTTP
-      hosts:
-        - "myapp.example.com"
-        - "*.example.com"      # Wildcard
+  listeners:
+    # HTTP listener
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
     
-    # HTTPS server
-    - port:
-        number: 443
-        name: https
-        protocol: HTTPS
+    # HTTPS listener
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "secure.example.com"
       tls:
-        mode: SIMPLE           # TLS termination
-        credentialName: tls-secret  # K8s secret with cert
-      hosts:
-        - "secure.example.com"
+        mode: Terminate
+        certificateRefs:
+          - name: tls-secret
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same
 ```
 
-### VirtualService
+> **Note:** When you create a Gateway resource, Istio automatically provisions
+> a deployment and service to handle the traffic. No need for separate
+> `istio-ingressgateway`!
 
-Routing rules for traffic:
+### VirtualService (Works with Gateway API)
+
+VirtualService is still used with Gateway API for advanced routing like traffic splitting, retries, and timeouts:
 
 ```yaml
 # ============================================================================
-# ISTIO VIRTUALSERVICE
+# ISTIO VIRTUALSERVICE with Gateway API
 # ============================================================================
-# Defines how requests are routed to services
+# VirtualService works with Kubernetes Gateway API Gateway
+# For advanced features not yet in Gateway API (retries, timeouts, etc.)
 
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -290,10 +315,10 @@ spec:
     - my-service              # Internal service
   
   # ---------------------------------------------------------------------------
-  # GATEWAYS: Which gateways to attach to
+  # GATEWAYS: Reference Gateway API Gateway by namespace/name
   # ---------------------------------------------------------------------------
   gateways:
-    - my-gateway              # External traffic
+    - my-gateway              # K8s Gateway API Gateway
     - mesh                    # Internal mesh traffic
   
   # ---------------------------------------------------------------------------
@@ -322,7 +347,7 @@ spec:
           weight: 10          # 10% to v2
     
     # ---------------------------------------------------------------------------
-    # RETRIES
+    # RETRIES (Istio-specific, not in Gateway API yet)
     # ---------------------------------------------------------------------------
     retries:
       attempts: 3
@@ -333,6 +358,40 @@ spec:
     # TIMEOUT
     # ---------------------------------------------------------------------------
     timeout: 10s
+```
+
+### HTTPRoute (Pure Gateway API Alternative)
+
+For simple routing without Istio-specific features, use HTTPRoute:
+
+```yaml
+# ============================================================================
+# HTTPROUTE - Pure Gateway API Routing
+# ============================================================================
+# Use this for simple routing without VirtualService
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-route
+spec:
+  parentRefs:
+    - name: my-gateway        # Reference to Gateway
+  hostnames:
+    - "myapp.example.com"
+  rules:
+    # Traffic splitting with weights
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: my-service-v1
+          port: 80
+          weight: 90
+        - name: my-service-v2
+          port: 80
+          weight: 10
 ```
 
 ### DestinationRule
@@ -392,16 +451,25 @@ spec:
 
 ```mermaid
 flowchart TB
-    Client["Client"] --> Gateway["Gateway<br/>Accept traffic"]
-    Gateway --> VS["VirtualService<br/>Route by rules"]
-    VS --> DR["DestinationRule<br/>Apply policies"]
+    Client["Client"] --> Gateway["K8s Gateway API<br/>Accept traffic"]
+    Gateway --> Route{"HTTPRoute or<br/>VirtualService"}
+    Route --> DR["DestinationRule<br/>Apply policies"]
     DR --> Subset1["Subset v1<br/>(90%)"]
     DR --> Subset2["Subset v2<br/>(10%)"]
     
-    style Gateway fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
-    style VS fill:#50fa7b,stroke:#8be9fd,color:#282a36
+    style Gateway fill:#8be9fd,stroke:#50fa7b,color:#282a36
+    style Route fill:#50fa7b,stroke:#8be9fd,color:#282a36
     style DR fill:#ffb86c,stroke:#f1fa8c,color:#282a36
 ```
+
+### Gateway API vs Legacy Istio Gateway
+
+| Aspect | Legacy Istio Gateway | Kubernetes Gateway API |
+|--------|---------------------|------------------------|
+| **API Group** | `networking.istio.io/v1beta1` | `gateway.networking.k8s.io/v1` |
+| **Portability** | Istio only | Works with any Gateway API controller |
+| **Provisioning** | Uses existing `istio-ingressgateway` | Auto-provisions gateway pods |
+| **Recommended** | Legacy (still supported) | ✅ Preferred for new deployments |
 
 ---
 
@@ -698,7 +766,7 @@ kubectl label namespace default istio-injection=enabled
 kubectl get pods -n istio-system
 ```
 
-### Lab 2: Deploy Sample App
+### Lab 2: Deploy Sample App with Gateway API
 
 ```bash
 # Deploy Bookinfo sample
@@ -707,16 +775,66 @@ kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
 # Wait for pods
 kubectl wait --for=condition=ready pod --all --timeout=120s
 
-# Expose via Gateway
-kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml
+# Create Gateway using Kubernetes Gateway API
+cat <<EOF | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: bookinfo-gateway
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+EOF
 
-# Get ingress URL
-export INGRESS_HOST=$(minikube ip)
-export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
-echo "http://$INGRESS_HOST:$INGRESS_PORT/productpage"
+# Create HTTPRoute for productpage
+cat <<EOF | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: bookinfo-route
+spec:
+  parentRefs:
+    - name: bookinfo-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /productpage
+        - path:
+            type: PathPrefix
+            value: /static
+        - path:
+            type: PathPrefix
+            value: /login
+        - path:
+            type: PathPrefix
+            value: /logout
+        - path:
+            type: PathPrefix
+            value: /api/v1/products
+      backendRefs:
+        - name: productpage
+          port: 9080
+EOF
+
+# Wait for Gateway to get an address
+kubectl wait --for=condition=programmed gateway bookinfo-gateway --timeout=60s
+
+# Get Gateway URL
+export GATEWAY_URL=$(kubectl get gateway bookinfo-gateway -o jsonpath='{.status.addresses[0].value}')
+echo "http://$GATEWAY_URL/productpage"
+
+# For Minikube, use tunnel if needed
+minikube tunnel &
 
 # Test
-curl http://$INGRESS_HOST:$INGRESS_PORT/productpage
+curl http://$GATEWAY_URL/productpage
 ```
 
 ### Lab 3: Traffic Splitting
@@ -847,13 +965,14 @@ flowchart TB
     style Observe fill:#8be9fd,stroke:#50fa7b,color:#282a36
 ```
 
-| Resource | Purpose |
-|----------|---------|
-| **Gateway** | External traffic entry |
-| **VirtualService** | Routing rules |
-| **DestinationRule** | Policies, subsets |
-| **PeerAuthentication** | mTLS settings |
-| **AuthorizationPolicy** | Access control |
+| Resource | API | Purpose |
+|----------|-----|--------|
+| **Gateway** | `gateway.networking.k8s.io/v1` | External traffic entry (K8s Gateway API) |
+| **HTTPRoute** | `gateway.networking.k8s.io/v1` | Simple HTTP routing (K8s Gateway API) |
+| **VirtualService** | `networking.istio.io/v1beta1` | Advanced routing rules |
+| **DestinationRule** | `networking.istio.io/v1beta1` | Policies, subsets |
+| **PeerAuthentication** | `security.istio.io/v1beta1` | mTLS settings |
+| **AuthorizationPolicy** | `security.istio.io/v1beta1` | Access control |
 
 ---
 
@@ -868,7 +987,8 @@ You've completed the Kubernetes Networking Mastery Guide!
 3. ✅ Ingress & Controllers
 4. ✅ Network Policies
 5. ✅ DNS & CoreDNS
-6. ✅ Service Mesh (Istio)
+6. ✅ Service Mesh (Istio + Gateway API)
+7. ✅ Gateway API (Modern Ingress)
 
 ### Next Steps:
 

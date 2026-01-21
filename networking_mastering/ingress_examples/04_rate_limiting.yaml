@@ -1,0 +1,324 @@
+# ============================================================================
+# INGRESS - Rate Limiting & Security
+# ============================================================================
+# Protect your services with rate limiting, IP whitelisting, and timeouts
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │                  Ingress Rate Limiting Flow                 │
+# ├─────────────────────────────────────────────────────────────┤
+# │                                                             │
+# │   1. Client requests: http://api.example.com/users          │
+# │                           │                                 │
+# │   2. Ingress Controller checks rate limits                  │
+# │      - Client IP: 192.168.1.100                             │
+# │      - Current requests this second: 5                      │
+# │      - Limit: 10 requests/second                            │
+# │                           │                                 │
+# │   3. If under limit: Forward request to backend             │
+# │      If over limit: Return 503 Service Unavailable          │
+# │                           │                                 │
+# │   4. Response returns to client                             │
+# │                                                             │
+# │   ┌─────────────────────────────────────────────────────┐   │
+# │   │  Request → Rate Check → Allow/Deny → Backend/Error │   │
+# │   │                                                     │   │
+# │   │  Under limit: 200 OK (normal response)              │   │
+# │   │  Over limit:  503 Service Unavailable               │   │
+# │   └─────────────────────────────────────────────────────┘   │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+#
+# PREREQUISITES:
+# --------------
+# 1. Enable Ingress addon:
+#    minikube addons enable ingress
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply this file:
+#    kubectl apply -f 04_rate_limiting.yaml
+#
+# 2. Add to /etc/hosts:
+#    echo "$(minikube ip) ratelimit.example.com" | sudo tee -a /etc/hosts
+#
+# 3. Test rate limiting:
+#    for i in {1..20}; do curl -s -o /dev/null -w "%{http_code}\n" http://ratelimit.example.com; done
+#    (Should see 200s then 503s when limit exceeded)
+#
+# 4. Cleanup:
+#    kubectl delete -f 04_rate_limiting.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# BACKEND SERVICE
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rate-limited-app
+  labels:
+    app: rate-limited-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rate-limited-app
+  template:
+    metadata:
+      labels:
+        app: rate-limited-app
+    spec:
+      containers:
+        - name: app
+          image: hashicorp/http-echo
+          args:
+            - "-text=Request successful! 🚀 Rate limit not exceeded."
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rate-limited-app
+spec:
+  selector:
+    app: rate-limited-app
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# INGRESS WITH RATE LIMITING
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rate-limited-ingress
+  annotations:
+    # ─────────────────────────────────────────────────────────────────────────
+    # RATE LIMITING: Limit requests per second
+    # ─────────────────────────────────────────────────────────────────────────
+    # limit-rps: Requests per second per client IP
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+
+    # limit-rpm: Requests per minute (alternative)
+    # nginx.ingress.kubernetes.io/limit-rpm: "100"
+
+    # limit-connections: Max concurrent connections per client IP
+    nginx.ingress.kubernetes.io/limit-connections: "10"
+
+    # limit-burst-multiplier: Allow burst of requests (default: 5)
+    # Example: limit-rps=5, burst=5 allows 25 requests/sec burst
+    # nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+
+    # limit-rate: Limit response size per second (bytes)
+    # nginx.ingress.kubernetes.io/limit-rate: "1024k"
+
+    # limit-rate-after: Start limiting after this much data
+    # nginx.ingress.kubernetes.io/limit-rate-after: "10m"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TIMEOUTS: Protect against slow clients/backends
+    # ─────────────────────────────────────────────────────────────────────────
+    # Client read timeout (waiting for client to send request)
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # Backend connect timeout (connecting to service)
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+
+    # Backend send timeout (sending request to backend)
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # REQUEST SIZE LIMITS: Protect against large payloads
+    # ─────────────────────────────────────────────────────────────────────────
+    # Max request body size (for file uploads, etc.)
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ratelimit.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rate-limited-app
+                port:
+                  number: 80
+
+---
+# ============================================================================
+# INGRESS WITH IP WHITELIST
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whitelist-ingress
+  annotations:
+    # ─────────────────────────────────────────────────────────────────────────
+    # IP WHITELIST: Only allow specific IPs/CIDRs
+    # ─────────────────────────────────────────────────────────────────────────
+    # Only these IPs can access (comma-separated)
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,192.168.0.0/16,172.16.0.0/12"
+
+    # For blocking specific IPs, use denylist (requires snippet):
+    # nginx.ingress.kubernetes.io/configuration-snippet: |
+    #   deny 192.168.1.100;
+    #   deny 10.0.0.50;
+    #   allow all;
+
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: internal.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rate-limited-app
+                port:
+                  number: 80
+
+---
+# ============================================================================
+# INGRESS WITH BASIC AUTH
+# ============================================================================
+# To create auth secret:
+#   htpasswd -c auth admin
+#   kubectl create secret generic basic-auth --from-file=auth
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: basicauth-ingress
+  annotations:
+    # ─────────────────────────────────────────────────────────────────────────
+    # BASIC AUTH: Username/Password protection
+    # ─────────────────────────────────────────────────────────────────────────
+    # Type of authentication
+    nginx.ingress.kubernetes.io/auth-type: basic
+
+    # Secret containing htpasswd file
+    nginx.ingress.kubernetes.io/auth-secret: basic-auth
+
+    # Realm shown in browser prompt
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required - Protected Area"
+
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: protected.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rate-limited-app
+                port:
+                  number: 80
+
+---
+# ============================================================================
+# INGRESS WITH CUSTOM HEADERS
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: custom-headers-ingress
+  annotations:
+    # ─────────────────────────────────────────────────────────────────────────
+    # CUSTOM HEADERS: Add security headers to responses
+    # ─────────────────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # Security headers
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+      # CORS headers (if needed)
+      # add_header Access-Control-Allow-Origin "*" always;
+      # add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+
+      # Custom app headers
+      add_header X-Served-By "kubernetes-ingress" always;
+
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: headers.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rate-limited-app
+                port:
+                  number: 80
+# ============================================================================
+# HOW TO TEST RATE LIMITING
+# ============================================================================
+#
+# 1. Make rapid requests:
+#    for i in {1..20}; do
+#      curl -s -o /dev/null -w "Request $i: %{http_code}\n" http://ratelimit.example.com
+#    done
+#
+# 2. Expected output:
+#    Request 1: 200
+#    Request 2: 200
+#    Request 3: 200
+#    Request 4: 200
+#    Request 5: 200
+#    Request 6: 503   # Rate limit exceeded!
+#    Request 7: 503
+#    ...
+#
+# 3. Test with parallel requests:
+#    seq 20 | xargs -P 20 -I {} curl -s -o /dev/null -w "%{http_code}\n" http://ratelimit.example.com
+#
+# ============================================================================
+
+# ============================================================================
+# HOW TO CREATE BASIC AUTH SECRET
+# ============================================================================
+#
+# 1. Install htpasswd:
+#    sudo apt-get install apache2-utils  # Debian/Ubuntu
+#    brew install httpd                   # macOS
+#
+# 2. Create htpasswd file:
+#    htpasswd -c auth admin
+#    # Enter password when prompted
+#
+# 3. Add more users:
+#    htpasswd auth user2
+#
+# 4. Create Kubernetes secret:
+#    kubectl create secret generic basic-auth --from-file=auth
+#
+# 5. Test:
+#    curl -u admin:password http://protected.example.com
+#
+# ============================================================================

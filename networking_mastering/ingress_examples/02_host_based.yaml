@@ -1,0 +1,304 @@
+# ============================================================================
+# INGRESS - Host-Based Routing (Virtual Hosting)
+# ============================================================================
+# Routes different hostnames to different services
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │                  Ingress Host-Based Routing Flow            │
+# ├─────────────────────────────────────────────────────────────┤
+# │                                                             │
+# │   1. Client requests: http://api.example.com/users          │
+# │                           │                                 │
+# │   2. DNS resolves to Ingress Controller IP                  │
+# │                           │                                 │
+# │   3. Ingress Controller receives request                    │
+# │      - Reads Host header: api.example.com                   │
+# │                           │                                 │
+# │   4. Matches host rule: api.example.com → api-service       │
+# │                           │                                 │
+# │   5. Forwards to backend: api-service:80                    │
+# │                           │                                 │
+# │   6. Response returns via same path                         │
+# │                                                             │
+# │   ┌─────────────────────────────────────────────────────┐   │
+# │   │  api.example.com   ──→ api-service   ──→ API Pods   │   │
+# │   │  web.example.com   ──→ web-service   ──→ Web Pods   │   │
+# │   │  admin.example.com ──→ admin-service ──→ Admin Pods │   │
+# │   └─────────────────────────────────────────────────────┘   │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+#
+# PREREQUISITES:
+# --------------
+# 1. Enable Ingress addon in Minikube:
+#    minikube addons enable ingress
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply this file:
+#    kubectl apply -f 02_host_based.yaml
+#
+# 2. Add to /etc/hosts:
+#    MINIKUBE_IP=$(minikube ip)
+#    echo "$MINIKUBE_IP api.example.com web.example.com admin.example.com" | sudo tee -a /etc/hosts
+#
+# 3. Test:
+#    curl http://api.example.com
+#    curl http://web.example.com
+#    curl http://admin.example.com
+#
+# 4. Cleanup:
+#    kubectl delete -f 02_host_based.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# BACKEND 1: API Service (api.example.com)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-backend
+  labels:
+    app: api-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-backend
+  template:
+    metadata:
+      labels:
+        app: api-backend
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo
+          args:
+            - "-text=Welcome to API Service! Host: api.example.com"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-backend
+spec:
+  selector:
+    app: api-backend
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# BACKEND 2: Web Service (web.example.com)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-backend
+  labels:
+    app: web-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-backend
+  template:
+    metadata:
+      labels:
+        app: web-backend
+    spec:
+      containers:
+        - name: web
+          image: hashicorp/http-echo
+          args:
+            - "-text=Welcome to Web Service! Host: web.example.com"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-backend
+spec:
+  selector:
+    app: web-backend
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# BACKEND 3: Admin Service (admin.example.com)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-backend
+  labels:
+    app: admin-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-backend
+  template:
+    metadata:
+      labels:
+        app: admin-backend
+    spec:
+      containers:
+        - name: admin
+          image: hashicorp/http-echo
+          args:
+            - "-text=Welcome to Admin Panel! Host: admin.example.com"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-backend
+spec:
+  selector:
+    app: admin-backend
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# INGRESS - Host-Based Routing
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-based-ingress
+  annotations:
+    # Optional: Add custom error pages
+    # nginx.ingress.kubernetes.io/custom-http-errors: "404,503"
+    # nginx.ingress.kubernetes.io/default-backend: error-backend
+
+    # Optional: Sticky sessions (for stateful apps)
+    # nginx.ingress.kubernetes.io/affinity: "cookie"
+    # nginx.ingress.kubernetes.io/session-cookie-name: "route"
+
+    # Optional: Rate limiting per host
+    # nginx.ingress.kubernetes.io/limit-rps: "10"
+    pass
+spec:
+  ingressClassName: nginx
+
+  # ---------------------------------------------------------------------------
+  # RULES - Each rule handles a different hostname
+  # ---------------------------------------------------------------------------
+  rules:
+    # ─────────────────────────────────────────────────────────────────────────
+    # Rule 1: api.example.com → api-backend
+    # ─────────────────────────────────────────────────────────────────────────
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-backend
+                port:
+                  number: 80
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Rule 2: web.example.com → web-backend
+    # ─────────────────────────────────────────────────────────────────────────
+    - host: web.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-backend
+                port:
+                  number: 80
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Rule 3: admin.example.com → admin-backend
+    # ─────────────────────────────────────────────────────────────────────────
+    - host: admin.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-backend
+                port:
+                  number: 80
+# ============================================================================
+# WILDCARD HOSTNAME EXAMPLE
+# ============================================================================
+# You can also use wildcard hostnames:
+#
+# rules:
+#   - host: "*.example.com"    # Matches any subdomain
+#     http:
+#       paths:
+#         - path: /
+#           pathType: Prefix
+#           backend:
+#             service:
+#               name: wildcard-backend
+#               port:
+#                 number: 80
+#
+# ============================================================================
+
+# ============================================================================
+# HOW TO TEST
+# ============================================================================
+#
+# 1. Get Ingress status:
+#    kubectl get ingress host-based-ingress
+#
+# 2. Test each host:
+#    curl http://api.example.com
+#    # Output: Welcome to API Service! Host: api.example.com
+#
+#    curl http://web.example.com
+#    # Output: Welcome to Web Service! Host: web.example.com
+#
+#    curl http://admin.example.com
+#    # Output: Welcome to Admin Panel! Host: admin.example.com
+#
+# 3. Test with Host header (without /etc/hosts):
+#    curl -H "Host: api.example.com" http://$(minikube ip)
+#
+# ============================================================================

@@ -1,0 +1,276 @@
+# ============================================================================
+# INGRESS - TLS/HTTPS (SSL Termination)
+# ============================================================================
+# Secure your services with HTTPS - TLS termination at Ingress
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │                  Ingress TLS/HTTPS Flow                     │
+# ├─────────────────────────────────────────────────────────────┤
+# │                                                             │
+# │   1. Client requests: https://secure.example.com            │
+# │                           │                                 │
+# │   2. TLS handshake with Ingress Controller                  │
+# │      - Controller presents TLS certificate                  │
+# │      - Client validates certificate                         │
+# │      - Encrypted connection established                     │
+# │                           │                                 │
+# │   3. Ingress Controller decrypts HTTPS → HTTP               │
+# │      - This is called "TLS Termination"                     │
+# │                           │                                 │
+# │   4. Forwards plain HTTP to backend service                 │
+# │      - Backend doesn't need TLS configured                  │
+# │                           │                                 │
+# │   5. Response encrypted and sent to client                  │
+# │                                                             │
+# │   ┌─────────────────────────────────────────────────────┐   │
+# │   │  Client ──HTTPS──► Ingress ──HTTP──► Backend Pod    │   │
+# │   │           🔒                          (no TLS)      │   │
+# │   └─────────────────────────────────────────────────────┘   │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+#
+# PREREQUISITES:
+# --------------
+# 1. Enable Ingress addon:
+#    minikube addons enable ingress
+#
+# 2. Create a self-signed certificate (for testing):
+#    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#      -keyout tls.key -out tls.crt \
+#      -subj "/CN=secure.example.com/O=MyOrg"
+#
+# 3. Create TLS Secret:
+#    kubectl create secret tls tls-secret \
+#      --cert=tls.crt --key=tls.key
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply this file:
+#    kubectl apply -f 03_tls_ingress.yaml
+#
+# 2. Add to /etc/hosts:
+#    echo "$(minikube ip) secure.example.com" | sudo tee -a /etc/hosts
+#
+# 3. Test:
+#    curl -k https://secure.example.com
+#    (-k skips certificate validation for self-signed certs)
+#
+# 4. Cleanup:
+#    kubectl delete -f 03_tls_ingress.yaml
+#    kubectl delete secret tls-secret
+#
+# ============================================================================
+
+---
+# ============================================================================
+# TLS SECRET (Certificate + Key)
+# ============================================================================
+# In production, use cert-manager to automatically manage certificates!
+# For this example, we create a simple self-signed certificate.
+#
+# To create the secret manually:
+#   kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key
+#
+# The secret must contain:
+#   - tls.crt: The TLS certificate (PEM format)
+#   - tls.key: The TLS private key (PEM format)
+
+# Note: For this example to work, you need to create the secret first!
+# The example secret below uses placeholder values and won't work directly.
+
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: tls-secret
+# type: kubernetes.io/tls
+# data:
+#   tls.crt: <base64-encoded-certificate>
+#   tls.key: <base64-encoded-private-key>
+
+---
+# ============================================================================
+# BACKEND SERVICE
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app
+  labels:
+    app: secure-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+    spec:
+      containers:
+        - name: app
+          image: hashicorp/http-echo
+          args:
+            - "-text=Welcome to Secure App! 🔒 You're connected via HTTPS!"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-app
+spec:
+  selector:
+    app: secure-app
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# INGRESS WITH TLS
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tls-ingress
+  annotations:
+    # ─────────────────────────────────────────────────────────────────────────
+    # HTTPS REDIRECT: Redirect HTTP to HTTPS
+    # ─────────────────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+    # Force SSL (return 403 for HTTP)
+    # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HSTS: HTTP Strict Transport Security
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tells browsers to always use HTTPS for this domain
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BACKEND PROTOCOL: If backend also uses HTTPS
+    # ─────────────────────────────────────────────────────────────────────────
+    # Use if backend service requires HTTPS (end-to-end encryption)
+    # nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+
+spec:
+  ingressClassName: nginx
+
+  # ---------------------------------------------------------------------------
+  # TLS CONFIGURATION
+  # ---------------------------------------------------------------------------
+  # Each TLS entry specifies which certificate to use for which hosts
+  tls:
+    - hosts:
+        - secure.example.com # Hostname the certificate is for
+        # You can list multiple hosts if the cert covers them (SAN)
+        # - secure2.example.com
+      secretName: tls-secret # Secret containing tls.crt and tls.key
+
+  # ---------------------------------------------------------------------------
+  # ROUTING RULES
+  # ---------------------------------------------------------------------------
+  rules:
+    - host: secure.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: secure-app
+                port:
+                  number: 80
+
+---
+# ============================================================================
+# INGRESS WITH HTTP→HTTPS REDIRECT (Alternative Approach)
+# ============================================================================
+# This creates a separate Ingress just for HTTP that redirects to HTTPS
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: http-redirect-ingress
+  annotations:
+    # Permanent redirect (301) from HTTP to HTTPS
+    nginx.ingress.kubernetes.io/permanent-redirect: https://secure.example.com$request_uri
+    nginx.ingress.kubernetes.io/permanent-redirect-code: "301"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: secure.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # This won't be used due to redirect, but is required
+                name: secure-app
+                port:
+                  number: 80
+# ============================================================================
+# CERTIFICATE MANAGEMENT OPTIONS
+# ============================================================================
+#
+# 1. SELF-SIGNED (Testing only):
+#    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#      -keyout tls.key -out tls.crt \
+#      -subj "/CN=secure.example.com"
+#    kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key
+#
+# 2. CERT-MANAGER (Production - Recommended):
+#    - Install cert-manager: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml
+#    - Add annotation to Ingress:
+#      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+#    - cert-manager automatically provisions and renews certificates!
+#
+# 3. EXISTING CERTIFICATE (Enterprise):
+#    - Get certificate from your CA
+#    - Create secret: kubectl create secret tls tls-secret --cert=cert.pem --key=key.pem
+#
+# ============================================================================
+
+# ============================================================================
+# HOW TO TEST
+# ============================================================================
+#
+# 1. Create self-signed certificate:
+#    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#      -keyout tls.key -out tls.crt \
+#      -subj "/CN=secure.example.com/O=MyOrg"
+#
+# 2. Create secret:
+#    kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key
+#
+# 3. Apply Ingress:
+#    kubectl apply -f 03_tls_ingress.yaml
+#
+# 4. Get Ingress info:
+#    kubectl get ingress tls-ingress
+#    kubectl describe ingress tls-ingress
+#
+# 5. Test HTTPS (skip cert validation for self-signed):
+#    curl -k -v https://secure.example.com
+#
+# 6. Verify redirect (HTTP → HTTPS):
+#    curl -v http://secure.example.com
+#    # Should see 301/308 redirect to https://
+#
+# 7. Check certificate details:
+#    openssl s_client -connect secure.example.com:443 -servername secure.example.com
+#
+# ============================================================================

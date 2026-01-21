@@ -1,0 +1,362 @@
+# ============================================================================
+# INGRESS - Path-Based Routing (Complete Example)
+# ============================================================================
+# Routes different URL paths to different services
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │                  Ingress Path-Based Routing Flow            │
+# ├─────────────────────────────────────────────────────────────┤
+# │                                                             │
+# │   1. Client requests: http://myapp.example.com/api/users    │
+# │                           │                                 │
+# │   2. DNS resolves to Ingress Controller IP                  │
+# │                           │                                 │
+# │   3. Ingress Controller receives request                    │
+# │      - Checks host: myapp.example.com ✓                     │
+# │                           │                                 │
+# │   4. Matches path rule: /api/* → api-service                │
+# │      - Applies rewrite: /api/users → /users                 │
+# │                           │                                 │
+# │   5. Forwards to backend: api-service:80                    │
+# │                           │                                 │
+# │   6. Service load balances to pod                           │
+# │                           │                                 │
+# │   7. Response returns via same path                         │
+# │                                                             │
+# │   ┌─────────────────────────────────────────────────────┐   │
+# │   │  Client → Ingress → Match Path → Service → Pod      │   │
+# │   │                                                     │   │
+# │   │  /api/*  ──→ api-service ──→ API Pods               │   │
+# │   │  /web/*  ──→ web-service ──→ Web Pods               │   │
+# │   │  /       ──→ frontend-service ──→ Frontend Pods     │   │
+# │   └─────────────────────────────────────────────────────┘   │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+#
+# PREREQUISITES:
+# --------------
+# 1. Enable Ingress addon in Minikube:
+#    minikube addons enable ingress
+#
+# 2. Wait for Ingress Controller:
+#    kubectl wait --namespace ingress-nginx \
+#      --for=condition=Ready pod \
+#      --selector=app.kubernetes.io/component=controller \
+#      --timeout=120s
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply this file:
+#    kubectl apply -f 01_path_based.yaml
+#
+# 2. Get Minikube IP:
+#    minikube ip
+#
+# 3. Add to /etc/hosts:
+#    echo "$(minikube ip) myapp.example.com" | sudo tee -a /etc/hosts
+#
+# 4. Test:
+#    curl http://myapp.example.com/api/users
+#    curl http://myapp.example.com/web/home
+#    curl http://myapp.example.com/
+#
+# 5. Cleanup:
+#    kubectl delete -f 01_path_based.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# BACKEND 1: API Service
+# ============================================================================
+# Handles /api/* requests
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  labels:
+    app: api-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from API Service! Path: /api/*"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  labels:
+    app: api-service
+spec:
+  selector:
+    app: api-service
+  ports:
+    - port: 80
+      targetPort: 5678
+      name: http
+
+---
+# ============================================================================
+# BACKEND 2: Web Service
+# ============================================================================
+# Handles /web/* requests
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service
+  labels:
+    app: web-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-service
+  template:
+    metadata:
+      labels:
+        app: web-service
+    spec:
+      containers:
+        - name: web
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from Web Service! Path: /web/*"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  labels:
+    app: web-service
+spec:
+  selector:
+    app: web-service
+  ports:
+    - port: 80
+      targetPort: 5678
+      name: http
+
+---
+# ============================================================================
+# BACKEND 3: Frontend Service (Default Backend)
+# ============================================================================
+# Handles / (default) requests
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-service
+  labels:
+    app: frontend-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend-service
+  template:
+    metadata:
+      labels:
+        app: frontend-service
+    spec:
+      containers:
+        - name: frontend
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from Frontend Service! Path: /"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  labels:
+    app: frontend-service
+spec:
+  selector:
+    app: frontend-service
+  ports:
+    - port: 80
+      targetPort: 5678
+      name: http
+
+---
+# ============================================================================
+# INGRESS - Path-Based Routing
+# ============================================================================
+# Routes different URL paths to different services
+
+apiVersion: networking.k8s.io/v1 # Networking API group
+kind: Ingress # Resource type
+metadata:
+  name: path-based-ingress # Ingress name
+  namespace: default
+
+  # ---------------------------------------------------------------------------
+  # ANNOTATIONS - Controller-specific settings
+  # ---------------------------------------------------------------------------
+  # These are NGINX-specific annotations
+  # Other controllers (Traefik, HAProxy) have different annotations
+  annotations:
+    # Rewrite /api/users → /users when forwarding to backend
+    # The $1 captures the part after /api/ or /web/
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+
+    # Force HTTPS redirect (optional)
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+    # Increase proxy body size (for file uploads)
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # Increase read timeout (for slow backends)
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # Enable CORS (Cross-Origin Resource Sharing)
+    # nginx.ingress.kubernetes.io/enable-cors: "true"
+
+spec:
+  # ---------------------------------------------------------------------------
+  # INGRESS CLASS - Which controller handles this Ingress
+  # ---------------------------------------------------------------------------
+  # Similar to StorageClass - defines which controller processes this
+  # Common classes:
+  #   - nginx: NGINX Ingress Controller
+  #   - traefik: Traefik Ingress Controller
+  #   - haproxy: HAProxy Ingress Controller
+  ingressClassName: nginx
+
+  # ---------------------------------------------------------------------------
+  # RULES - Define routing based on host and path
+  # ---------------------------------------------------------------------------
+  rules:
+    # Rule 1: Route by host + path
+    - host: myapp.example.com # Match this hostname
+      http:
+        paths:
+          # ─────────────────────────────────────────────────────────────────
+          # Path 1: /api/* → api-service
+          # ─────────────────────────────────────────────────────────────────
+          # Matches: /api/users, /api/products, /api/orders
+          # Rewrites to: /users, /products, /orders
+          - path: /api/(.*) # Regex path matching with capture group
+            pathType: ImplementationSpecific # Required for regex
+            backend:
+              service:
+                name: api-service # Target service name
+                port:
+                  number: 80 # Target service port
+
+          # ─────────────────────────────────────────────────────────────────
+          # Path 2: /web/* → web-service
+          # ─────────────────────────────────────────────────────────────────
+          # Matches: /web/home, /web/about, /web/contact
+          # Rewrites to: /home, /about, /contact
+          - path: /web/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+
+          # ─────────────────────────────────────────────────────────────────
+          # Path 3: Default backend for unmatched paths
+          # ─────────────────────────────────────────────────────────────────
+          # Matches: /, /anything, /not-api, etc.
+          # Must be LAST in the list (rules are evaluated in order)
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
+# ============================================================================
+# PATH TYPES EXPLAINED
+# ============================================================================
+#
+# 1. Exact
+#    - Matches the path exactly
+#    - Example: path: /foo matches only /foo, not /foo/ or /foo/bar
+#
+# 2. Prefix
+#    - Matches based on URL path prefix
+#    - Example: path: /foo matches /foo, /foo/, /foo/bar
+#    - Trailing slashes are ignored
+#
+# 3. ImplementationSpecific
+#    - Interpretation depends on the IngressClass
+#    - Used for regex patterns (NGINX, Traefik)
+#    - Most flexible but least portable
+#
+# ============================================================================
+
+# ============================================================================
+# HOW TO TEST
+# ============================================================================
+#
+# 1. Check Ingress status:
+#    kubectl get ingress path-based-ingress
+#    kubectl describe ingress path-based-ingress
+#
+# 2. Get the Ingress address:
+#    kubectl get ingress path-based-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#
+# 3. Test each path:
+#    # API path
+#    curl http://myapp.example.com/api/users
+#    # Output: Hello from API Service! Path: /api/*
+#
+#    # Web path
+#    curl http://myapp.example.com/web/home
+#    # Output: Hello from Web Service! Path: /web/*
+#
+#    # Default path
+#    curl http://myapp.example.com/
+#    # Output: Hello from Frontend Service! Path: /
+#
+#    curl http://myapp.example.com/random
+#    # Output: Hello from Frontend Service! Path: /
+#
+# 4. Check logs if something doesn't work:
+#    kubectl logs -n ingress-nginx -l app.kubernetes.io/component=controller
+#
+# ============================================================================

@@ -16,6 +16,7 @@ This guide is split into focused chapters:
 | 4 | [04-network-policies.md](04-network-policies.md) | Network Policies (Zero Trust) |
 | 5 | [05-dns-coredns.md](05-dns-coredns.md) | DNS & CoreDNS |
 | 6 | [06-service-mesh.md](06-service-mesh.md) | Service Mesh (Istio) |
+| 7 | [07-gateway-api.md](07-gateway-api.md) | Gateway API (Modern Ingress) |
 
 ---
 
@@ -28,6 +29,9 @@ minikube start --cpus=4 --memory=8192 --cni=calico
 # Enable required addons
 minikube addons enable ingress
 minikube addons enable metrics-server
+
+# For Gateway API (Chapter 7)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
 ```
 
 ---
@@ -39,6 +43,7 @@ flowchart TB
     Start["🎯 Start Here"] --> CNI["1. CNI Concepts<br/>Pod Networking"]
     CNI --> Services["2. Services<br/>Load Balancing"]
     Services --> Ingress["3. Ingress<br/>HTTP Routing"]
+    Ingress --> GatewayAPI["7. Gateway API<br/>Modern Ingress"]
     Ingress --> NetPol["4. Network Policies<br/>Security"]
     NetPol --> DNS["5. DNS<br/>Service Discovery"]
     DNS --> Mesh["6. Service Mesh<br/>Advanced Traffic"]
@@ -46,6 +51,7 @@ flowchart TB
     
     style Start fill:#50fa7b,stroke:#8be9fd,color:#282a36
     style Master fill:#ff79c6,stroke:#bd93f9,color:#f8f8f2
+    style GatewayAPI fill:#8be9fd,stroke:#50fa7b,color:#282a36
 ```
 
 ---

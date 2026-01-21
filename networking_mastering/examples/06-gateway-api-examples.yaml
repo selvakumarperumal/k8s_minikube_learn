@@ -1,0 +1,1422 @@
+# ============================================================================
+# GATEWAY API - Complete Examples
+# ============================================================================
+# This file contains various Gateway API configurations with explanations
+#
+# PREREQUISITES:
+# --------------
+# 1. Install Gateway API CRDs:
+#    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+#
+# 2. Install NGINX Gateway Fabric controller:
+#    kubectl apply -f https://github.com/nginx/nginx-gateway-fabric/releases/download/v1.5.0/crds.yaml
+#    kubectl apply -f https://github.com/nginx/nginx-gateway-fabric/releases/download/v1.5.0/nginx-gateway.yaml
+#
+# 3. Wait for controller:
+#    kubectl wait --namespace nginx-gateway \
+#      --for=condition=Available deployment/nginx-gateway \
+#      --timeout=120s
+#
+# HOW TO RUN:
+# -----------
+# 1. Apply this file:
+#    kubectl apply -f 06-gateway-api-examples.yaml
+#
+# 2. Start Minikube tunnel (in separate terminal):
+#    minikube tunnel
+#
+# 3. Get Gateway IP:
+#    kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}'
+#
+# 4. Add hosts to /etc/hosts:
+#    GATEWAY_IP=$(kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}')
+#    echo "$GATEWAY_IP demo.local api.local web.local admin.local canary.local secure.local" | sudo tee -a /etc/hosts
+#
+# 5. Test:
+#    curl http://demo.local
+#    curl http://api.local/api/users
+#
+# 6. Cleanup:
+#    kubectl delete -f 06-gateway-api-examples.yaml
+#
+# ============================================================================
+
+---
+# ============================================================================
+# BACKEND SERVICES (Required for Gateway API to work)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-app
+  labels:
+    app: api-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-app
+  template:
+    metadata:
+      labels:
+        app: api-app
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from API service! (Gateway API)"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+spec:
+  selector:
+    app: api-app
+  ports:
+    - port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-frontend
+  labels:
+    app: web-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-frontend
+  template:
+    metadata:
+      labels:
+        app: web-frontend
+    spec:
+      containers:
+        - name: web
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from Web Frontend! (Gateway API)"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+spec:
+  selector:
+    app: web-frontend
+  ports:
+    - port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-app
+  labels:
+    app: admin-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-app
+  template:
+    metadata:
+      labels:
+        app: admin-app
+    spec:
+      containers:
+        - name: admin
+          image: hashicorp/http-echo
+          args:
+            - "-text=Hello from Admin Panel! (Gateway API)"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-service
+spec:
+  selector:
+    app: admin-app
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# CANARY DEPLOYMENT SERVICES (For traffic splitting examples)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-stable
+  labels:
+    app: app-stable
+    version: stable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app-stable
+  template:
+    metadata:
+      labels:
+        app: app-stable
+        version: stable
+    spec:
+      containers:
+        - name: app
+          image: hashicorp/http-echo
+          args:
+            - "-text=Stable Version v1.0"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-stable
+spec:
+  selector:
+    app: app-stable
+  ports:
+    - port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-canary
+  labels:
+    app: app-canary
+    version: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-canary
+  template:
+    metadata:
+      labels:
+        app: app-canary
+        version: canary
+    spec:
+      containers:
+        - name: app
+          image: hashicorp/http-echo
+          args:
+            - "-text=Canary Version v1.1"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-canary
+spec:
+  selector:
+    app: app-canary
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# VERSION ROUTING SERVICES (For header-based routing)
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-v1
+  labels:
+    app: api
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-v1
+  template:
+    metadata:
+      labels:
+        app: api-v1
+        version: v1
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo
+          args:
+            - "-text=API Version 1.0"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-v1
+spec:
+  selector:
+    app: api-v1
+  ports:
+    - port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-v2
+  labels:
+    app: api
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-v2
+  template:
+    metadata:
+      labels:
+        app: api-v2
+        version: v2
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo
+          args:
+            - "-text=API Version 2.0"
+          ports:
+            - containerPort: 5678
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-v2
+spec:
+  selector:
+    app: api-v2
+  ports:
+    - port: 80
+      targetPort: 5678
+
+---
+# ============================================================================
+# EXAMPLE 1: Main Gateway
+# ============================================================================
+# The Gateway is the entry point for all traffic
+# This is typically managed by cluster operators
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Gateway defines listeners (ports/protocols) separately from routing
+# - Routing rules are defined in HTTPRoute resources
+# - Clear separation of concerns!
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  labels:
+    gateway: main
+spec:
+  # ---------------------------------------------------------------------------
+  # gatewayClassName: Which controller handles this Gateway
+  # ---------------------------------------------------------------------------
+  # Similar to ingressClassName in Ingress
+  # Common options:
+  #   - nginx (NGINX Gateway Fabric)
+  #   - istio (Istio Gateway)
+  #   - envoy (Envoy Gateway)
+  gatewayClassName: nginx
+
+  # ---------------------------------------------------------------------------
+  # listeners: Define ports, protocols, and TLS settings
+  # ---------------------------------------------------------------------------
+  listeners:
+    # Listener 1: HTTP on port 80
+    - name: http
+      protocol: HTTP
+      port: 80
+      # ---------------------------------------------------------------------------
+      # hostname: Which hostnames this listener accepts
+      # ---------------------------------------------------------------------------
+      # Options:
+      #   - Omit: Accepts all hostnames
+      #   - Specific: "api.example.com"
+      #   - Wildcard: "*.example.com"
+      hostname: "*.local"
+
+      # ---------------------------------------------------------------------------
+      # allowedRoutes: Control which HTTPRoutes can attach to this listener
+      # ---------------------------------------------------------------------------
+      allowedRoutes:
+        namespaces:
+          from: All # Options: All, Same, Selector
+          # from: Selector
+          # selector:
+          #   matchLabels:
+          #     gateway-access: "true"
+
+# HOW TO TEST:
+# ------------
+# kubectl get gateway main-gateway
+# kubectl describe gateway main-gateway
+#
+# Check status:
+# kubectl get gateway main-gateway -o jsonpath='{.status.addresses}' | jq
+
+---
+# ============================================================================
+# EXAMPLE 2: Simple HTTPRoute (Host-Based Routing)
+# ============================================================================
+# Routes all traffic from one hostname to one service
+#
+# USE CASE:
+# - Simple single-app deployment
+# - Development environments
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - HTTPRoute is a separate resource from Gateway
+# - App developers create HTTPRoutes, not Gateways
+# - No controller-specific annotations needed!
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: simple-route
+  labels:
+    route: simple
+spec:
+  # ---------------------------------------------------------------------------
+  # parentRefs: Which Gateway(s) this route attaches to
+  # ---------------------------------------------------------------------------
+  parentRefs:
+    - name: main-gateway
+      # Optional: attach to specific listener
+      # sectionName: http
+
+  # ---------------------------------------------------------------------------
+  # hostnames: Match these hostnames
+  # ---------------------------------------------------------------------------
+  hostnames:
+    - demo.local
+
+  # ---------------------------------------------------------------------------
+  # rules: Define routing rules
+  # ---------------------------------------------------------------------------
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web-service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# GATEWAY_IP=$(kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}')
+# echo "$GATEWAY_IP demo.local" | sudo tee -a /etc/hosts
+#
+# curl http://demo.local
+# # Output: Hello from Web Frontend! (Gateway API)
+
+---
+# ============================================================================
+# EXAMPLE 3: Path-Based Routing
+# ============================================================================
+# Different paths go to different services
+#
+# USE CASE:
+# - Microservices with different endpoints
+# - API versioning (/v1, /v2)
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Path matching is more flexible and clear
+# - No need for rewrite-target annotations
+# - Native support for Prefix, Exact, and RegularExpression
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: path-based-route
+  labels:
+    route: path-based
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Rule 1: /api/* routes to api-service
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            # PathType options:
+            #   - PathPrefix: Matches prefix (like Ingress Prefix)
+            #   - Exact: Exact match only
+            #   - RegularExpression: Regex matching (controller-dependent)
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: api-service
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Rule 2: /web/* routes to web-service
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /web
+      backendRefs:
+        - name: web-service
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Rule 3: /admin/* routes to admin-service
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /admin
+      backendRefs:
+        - name: admin-service
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Rule 4: Default route (/) to web-service
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web-service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# echo "$(kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}') api.local" | sudo tee -a /etc/hosts
+#
+# curl http://api.local/api/users
+# # Output: Hello from API service! (Gateway API)
+#
+# curl http://api.local/web/home
+# # Output: Hello from Web Frontend! (Gateway API)
+#
+# curl http://api.local/admin/dashboard
+# # Output: Hello from Admin Panel! (Gateway API)
+#
+# curl http://api.local/
+# # Output: Hello from Web Frontend! (Gateway API)
+
+---
+# ============================================================================
+# EXAMPLE 4: Multi-Host Routing (Virtual Hosting)
+# ============================================================================
+# Different hostnames go to different services
+#
+# USE CASE:
+# - Multiple apps on same cluster
+# - Subdomain routing
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-host-route
+  labels:
+    route: multi-host
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  # Host 1: web.local -> web-service
+  hostnames:
+    - web.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web-service
+          port: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: admin-host-route
+  labels:
+    route: multi-host
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  # Host 2: admin.local -> admin-service
+  hostnames:
+    - admin.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: admin-service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# GATEWAY_IP=$(kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}')
+# echo "$GATEWAY_IP web.local admin.local" | sudo tee -a /etc/hosts
+#
+# curl http://web.local
+# # Output: Hello from Web Frontend! (Gateway API)
+#
+# curl http://admin.local
+# # Output: Hello from Admin Panel! (Gateway API)
+
+---
+# ============================================================================
+# EXAMPLE 5: Header-Based Routing
+# ============================================================================
+# Route based on HTTP headers - great for A/B testing, versioning
+#
+# USE CASE:
+# - API versioning (X-Version header)
+# - A/B testing (X-Experiment header)
+# - Canary with header flags
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Native support, no annotations!
+# - Can combine with path matching
+# - Multiple header conditions supported
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: header-based-route
+  labels:
+    route: header-based
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Rule 1: Route X-Version: v2 to api-v2
+    # ---------------------------------------------------------------------------
+    - matches:
+        - headers:
+            - name: X-Version
+              value: v2
+      backendRefs:
+        - name: api-v2
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Rule 2: Route X-Version: v1 to api-v1 (explicit)
+    # ---------------------------------------------------------------------------
+    - matches:
+        - headers:
+            - name: X-Version
+              value: v1
+      backendRefs:
+        - name: api-v1
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Rule 3: Default (no header) to api-v1
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /version
+      backendRefs:
+        - name: api-v1
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# # Default request (no header) -> v1
+# curl http://api.local/version
+# # Output: API Version 1.0
+#
+# # Request with X-Version: v1     -> v1
+# curl -H "X-Version: v1" http://api.local/version
+# # Output: API Version 1.0
+#
+# # Request with X-Version: v2 -> v2
+# curl -H "X-Version: v2" http://api.local/version
+# # Output: API Version 2.0
+
+---
+# ============================================================================
+# EXAMPLE 6: Traffic Splitting (Canary Deployment)
+# ============================================================================
+# Split traffic between services for canary deployments
+#
+# USE CASE:
+# - Canary deployments (90/10 split)
+# - Blue-green deployments (50/50 split)
+# - Gradual rollouts
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Native support with weight field
+# - No annotations or service mesh required!
+# - Easy to adjust percentages
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: canary-route
+  labels:
+    route: canary
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - canary.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # ---------------------------------------------------------------------------
+      # backendRefs with weights: Traffic splitting
+      # ---------------------------------------------------------------------------
+      # Weights are relative, not percentages
+      # Total weight = 90 + 10 = 100
+      # - app-stable gets 90/100 = 90% of traffic
+      # - app-canary gets 10/100 = 10% of traffic
+      backendRefs:
+        - name: app-stable
+          port: 80
+          weight: 90 # 90% of traffic
+        - name: app-canary
+          port: 80
+          weight: 10 # 10% of traffic
+
+# HOW TO TEST:
+# ------------
+# GATEWAY_IP=$(kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}')
+# echo "$GATEWAY_IP canary.local" | sudo tee -a /etc/hosts
+#
+# # Make 20 requests and count responses
+# for i in {1..20}; do curl -s http://canary.local/; done | sort | uniq -c
+#
+# # Expected output (approximately):
+# # 18 Stable Version v1.0
+# #  2 Canary Version v1.1
+#
+# To adjust split during rollout:
+# 1. Edit the weights: 80/20, 70/30, 50/50, etc.
+# 2. kubectl apply -f <file>
+# 3. Traffic split changes immediately!
+
+---
+# ============================================================================
+# EXAMPLE 7: URL Rewriting
+# ============================================================================
+# Rewrite paths before forwarding to backend
+#
+# USE CASE:
+# - Remove path prefix (/api/v1/users -> /users)
+# - Legacy URL migration
+# - API gateway patterns
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Native URLRewrite filter
+# - No nginx.ingress.kubernetes.io/rewrite-target annotation
+# - More explicit and readable
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rewrite-route
+  labels:
+    route: rewrite
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Rewrite /v1/* to /* (remove /v1 prefix)
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              # ReplacePrefixMatch: Replace the matched prefix
+              # /v1/users -> /users (replace /v1 with /)
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: api-service
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Rewrite specific path completely
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: Exact
+            value: /legacy-endpoint
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              # ReplaceFullPath: Replace entire path
+              type: ReplaceFullPath
+              replaceFullPath: /new-endpoint
+      backendRefs:
+        - name: api-service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# curl http://api.local/v1/users
+# # Request hits backend as: /users
+# # Output: Hello from API service! (Gateway API)
+#
+# curl http://api.local/legacy-endpoint
+# # Request hits backend as: /new-endpoint
+# # Output: Hello from API service! (Gateway API)
+
+---
+# ============================================================================
+# EXAMPLE 8: Request Header Modification
+# ============================================================================
+# Add, set, or remove headers on requests
+#
+# USE CASE:
+# - Add correlation IDs
+# - Set internal headers for backends
+# - Remove sensitive headers
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Native RequestHeaderModifier filter
+# - No configuration-snippet annotations
+# - Clear, declarative syntax
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: header-modify-route
+  labels:
+    route: header-modify
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /modified
+      filters:
+        # ---------------------------------------------------------------------------
+        # RequestHeaderModifier: Modify request headers sent to backend
+        # ---------------------------------------------------------------------------
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            # Add headers (appends to existing)
+            add:
+              - name: X-Request-Source
+                value: gateway-api
+              - name: X-Gateway-Version
+                value: v1
+            # Set headers (overwrites if exists)
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+            # Remove headers
+            remove:
+              - X-Sensitive-Header
+      backendRefs:
+        - name: api-service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# curl -v http://api.local/modified
+# # Backend receives additional headers:
+# # X-Request-Source: gateway-api
+# # X-Gateway-Version: v1
+# # X-Forwarded-Proto: https
+
+---
+# ============================================================================
+# EXAMPLE 9: Response Header Modification
+# ============================================================================
+# Add, set, or remove headers on responses
+#
+# USE CASE:
+# - Add security headers (CORS, CSP, etc.)
+# - Add caching headers
+# - Remove internal headers from responses
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: response-header-route
+  labels:
+    route: response-header
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /secure
+      filters:
+        # ---------------------------------------------------------------------------
+        # ResponseHeaderModifier: Modify response headers sent to client
+        # ---------------------------------------------------------------------------
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            # Add security headers
+            add:
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: X-Frame-Options
+                value: DENY
+              - name: X-XSS-Protection
+                value: "1; mode=block"
+            # Set CORS headers
+            set:
+              - name: Access-Control-Allow-Origin
+                value: "*"
+            # Remove internal headers
+            remove:
+              - X-Internal-Debug
+      backendRefs:
+        - name: api-service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# curl -I http://api.local/secure
+# # Response includes:
+# # X-Content-Type-Options: nosniff
+# # X-Frame-Options: DENY
+# # X-XSS-Protection: 1; mode=block
+# # Access-Control-Allow-Origin: *
+
+---
+# ============================================================================
+# EXAMPLE 10: Request Redirect
+# ============================================================================
+# Redirect requests to different URLs
+#
+# USE CASE:
+# - HTTP to HTTPS redirect
+# - Domain migration
+# - URL shorteners
+#
+# KEY DIFFERENCE FROM INGRESS:
+# - Native RequestRedirect filter
+# - Full control over redirect parameters
+# - No ssl-redirect annotations
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: redirect-route
+  labels:
+    route: redirect
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Redirect old path to new path
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: Exact
+            value: /old-page
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            # statusCode: 301 (permanent) or 302 (temporary)
+            statusCode: 301
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /new-page
+
+    # ---------------------------------------------------------------------------
+    # Redirect to HTTPS (for HTTP->HTTPS redirect pattern)
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /force-https
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+
+    # ---------------------------------------------------------------------------
+    # Redirect to different host
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /external
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            hostname: new-domain.example.com
+            statusCode: 302
+
+# HOW TO TEST:
+# ------------
+# curl -I http://api.local/old-page
+# # HTTP/1.1 301 Moved Permanently
+# # Location: http://api.local/new-page
+#
+# curl -I http://api.local/force-https
+# # HTTP/1.1 301 Moved Permanently
+# # Location: https://api.local/force-https
+#
+# curl -I http://api.local/external
+# # HTTP/1.1 302 Found
+# # Location: http://new-domain.example.com/external
+
+---
+# ============================================================================
+# EXAMPLE 11: Method-Based Routing
+# ============================================================================
+# Route based on HTTP method (GET, POST, etc.)
+#
+# USE CASE:
+# - REST API routing (GET vs POST handlers)
+# - Read/write service separation
+# - Method-specific rate limiting
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: method-based-route
+  labels:
+    route: method-based
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # GET requests to /items -> read service
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /items
+          method: GET
+      backendRefs:
+        - name: api-v1 # "read" service
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # POST/PUT/DELETE requests to /items -> write service
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /items
+          method: POST
+        - path:
+            type: PathPrefix
+            value: /items
+          method: PUT
+        - path:
+            type: PathPrefix
+            value: /items
+          method: DELETE
+      backendRefs:
+        - name: api-v2 # "write" service
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# curl http://api.local/items
+# # Output: API Version 1.0 (GET -> read service)
+#
+# curl -X POST http://api.local/items
+# # Output: API Version 2.0 (POST -> write service)
+#
+# curl -X PUT http://api.local/items/123
+# # Output: API Version 2.0 (PUT -> write service)
+
+---
+# ============================================================================
+# EXAMPLE 12: TLS Gateway (HTTPS)
+# ============================================================================
+# Secure Gateway with TLS termination
+#
+# PREREQUISITES:
+# --------------
+# Create TLS secret first:
+#
+# # Generate self-signed certificate
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#   -keyout tls.key -out tls.crt \
+#   -subj "/CN=secure.local"
+#
+# # Create Kubernetes secret
+# kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key
+#
+# USE CASE:
+# - Production HTTPS
+# - Secure APIs
+# - End-to-end encryption with TLS termination at gateway
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: secure-gateway
+  labels:
+    gateway: secure
+spec:
+  gatewayClassName: nginx
+
+  listeners:
+    # ---------------------------------------------------------------------------
+    # HTTPS listener with TLS termination
+    # ---------------------------------------------------------------------------
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: secure.local
+
+      # ---------------------------------------------------------------------------
+      # tls: TLS configuration
+      # ---------------------------------------------------------------------------
+      tls:
+        # mode options:
+        #   - Terminate: Gateway decrypts TLS (most common)
+        #   - Passthrough: Gateway passes encrypted traffic to backend
+        mode: Terminate
+        certificateRefs:
+          - name: tls-secret
+            kind: Secret
+            # namespace: default   # If secret is in different namespace
+
+      allowedRoutes:
+        namespaces:
+          from: Same
+
+    # ---------------------------------------------------------------------------
+    # HTTP listener (for redirect to HTTPS)
+    # ---------------------------------------------------------------------------
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: secure.local
+      allowedRoutes:
+        namespaces:
+          from: Same
+
+---
+# Route for HTTPS traffic
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: secure-https-route
+  labels:
+    route: secure
+spec:
+  parentRefs:
+    - name: secure-gateway
+      sectionName: https # Attach to HTTPS listener only
+
+  hostnames:
+    - secure.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web-service
+          port: 80
+
+---
+# HTTP to HTTPS redirect
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-redirect
+  labels:
+    route: redirect
+spec:
+  parentRefs:
+    - name: secure-gateway
+      sectionName: http # Attach to HTTP listener only
+
+  hostnames:
+    - secure.local
+
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+            port: 443
+
+# HOW TO TEST:
+# ------------
+# # First create the TLS secret (see PREREQUISITES above)
+#
+# GATEWAY_IP=$(kubectl get gateway secure-gateway -o jsonpath='{.status.addresses[0].value}')
+# echo "$GATEWAY_IP secure.local" | sudo tee -a /etc/hosts
+#
+# # Test HTTPS (-k ignores self-signed cert warning)
+# curl -k https://secure.local
+# # Output: Hello from Web Frontend! (Gateway API)
+#
+# # Test HTTP redirect
+# curl -I http://secure.local
+# # HTTP/1.1 301 Moved Permanently
+# # Location: https://secure.local/
+
+---
+# ============================================================================
+# EXAMPLE 13: Query Parameter Matching (Extended Feature)
+# ============================================================================
+# Route based on query parameters
+# Note: This is an extended feature, support varies by controller
+#
+# USE CASE:
+# - Feature flags via query params
+# - Debug mode routing
+# - A/B testing with URL params
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: query-param-route
+  labels:
+    route: query-param
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    # ---------------------------------------------------------------------------
+    # Route requests with ?version=v2 to api-v2
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /query
+          queryParams:
+            - name: version
+              value: v2
+      backendRefs:
+        - name: api-v2
+          port: 80
+
+    # ---------------------------------------------------------------------------
+    # Default (no query param) to api-v1
+    # ---------------------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /query
+      backendRefs:
+        - name: api-v1
+          port: 80
+
+# HOW TO TEST:
+# ------------
+# curl http://api.local/query
+# # Output: API Version 1.0
+#
+# curl "http://api.local/query?version=v2"
+# # Output: API Version 2.0
+
+---
+# ============================================================================
+# EXAMPLE 14: Timeouts Configuration
+# ============================================================================
+# Configure request timeouts
+# Note: This is a GEP-1742 feature, support varies by controller
+#
+# USE CASE:
+# - Long-running requests
+# - File uploads
+# - Streaming responses
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: timeout-route
+  labels:
+    route: timeout
+spec:
+  parentRefs:
+    - name: main-gateway
+
+  hostnames:
+    - api.local
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /slow
+      # ---------------------------------------------------------------------------
+      # timeouts: Request timeout configuration
+      # ---------------------------------------------------------------------------
+      timeouts:
+        request: 60s # Total request timeout (client to gateway to backend and back)
+        backendRequest: 30s # Timeout for backend to respond
+      backendRefs:
+        - name: api-service
+          port: 80
+# HOW TO TEST:
+# ------------
+# curl http://api.local/slow
+# # Request will wait up to 60s for complete response
+
+# ============================================================================
+# QUICK REFERENCE - GATEWAY API RESOURCES
+# ============================================================================
+#
+# CORE RESOURCES:
+# ---------------
+# GatewayClass    - Defines controller (cluster-scoped)
+# Gateway         - Defines listeners/ports
+# HTTPRoute       - HTTP/HTTPS routing rules
+# ReferenceGrant  - Cross-namespace permissions
+#
+# ROUTE TYPES:
+# ------------
+# HTTPRoute       - HTTP/HTTPS traffic (L7)
+# GRPCRoute       - gRPC traffic (L7)
+# TCPRoute        - TCP traffic (L4)
+# TLSRoute        - TLS passthrough (L4)
+# UDPRoute        - UDP traffic (L4)
+#
+# FILTERS:
+# --------
+# RequestHeaderModifier   - Add/set/remove request headers
+# ResponseHeaderModifier  - Add/set/remove response headers
+# URLRewrite              - Rewrite path/hostname
+# RequestRedirect         - Redirect to different URL
+# RequestMirror           - Mirror traffic to another service
+# ExtensionRef            - Custom filter (controller-specific)
+#
+# PATH TYPES:
+# -----------
+# PathPrefix              - Matches URL prefix (/api matches /api/*)
+# Exact                   - Exact match only (/api matches only /api)
+# RegularExpression       - Regex match (controller-dependent)
+#
+# NAMESPACE SELECTION:
+# --------------------
+# from: All               - Allow routes from all namespaces
+# from: Same              - Allow routes from same namespace only
+# from: Selector          - Allow routes from labeled namespaces
+#
+# ============================================================================

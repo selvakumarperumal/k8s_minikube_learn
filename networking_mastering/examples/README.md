@@ -11,6 +11,7 @@ This folder contains comprehensive YAML examples for each networking topic.
 | [03-network-policies-examples.yaml](03-network-policies-examples.yaml) | Network Policies | Deny-all, Allow specific, Namespace, CIDR, Egress |
 | [04-dns-examples.yaml](04-dns-examples.yaml) | DNS | Policies, Custom DNS, Headless, StatefulSet |
 | [05-istio-examples.yaml](05-istio-examples.yaml) | Istio | Gateway, VirtualService, DestinationRule, mTLS, Auth |
+| [06-gateway-api-examples.yaml](06-gateway-api-examples.yaml) | Gateway API | HTTPRoute, Traffic Splitting, Header Routing, TLS, URL Rewrite |
 
 ## Quick Start
 
@@ -141,6 +142,42 @@ export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -
 curl http://$INGRESS_HOST:$INGRESS_PORT
 ```
 
+### 6. Gateway API Examples
+
+```bash
+# Install Gateway API CRDs
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+
+# Install NGINX Gateway Fabric controller
+kubectl apply -f https://github.com/nginx/nginx-gateway-fabric/releases/download/v1.5.0/crds.yaml
+kubectl apply -f https://github.com/nginx/nginx-gateway-fabric/releases/download/v1.5.0/nginx-gateway.yaml
+
+# Wait for controller
+kubectl wait --namespace nginx-gateway \
+  --for=condition=Available deployment/nginx-gateway \
+  --timeout=120s
+
+# Apply examples
+kubectl apply -f 06-gateway-api-examples.yaml
+
+# Start tunnel (in separate terminal)
+minikube tunnel
+
+# Get Gateway IP
+GATEWAY_IP=$(kubectl get gateway main-gateway -o jsonpath='{.status.addresses[0].value}')
+
+# Add hosts
+echo "$GATEWAY_IP demo.local api.local web.local admin.local canary.local" | sudo tee -a /etc/hosts
+
+# Test
+curl http://demo.local
+curl http://api.local/api
+curl http://canary.local  # Traffic splitting example
+
+# Test header-based routing
+curl -H "X-Version: v2" http://api.local/version
+```
+
 ## Cleanup
 
 ```bash
@@ -150,7 +187,11 @@ kubectl delete -f 02-ingress-examples.yaml
 kubectl delete -f 03-network-policies-examples.yaml
 kubectl delete -f 04-dns-examples.yaml
 kubectl delete -f 05-istio-examples.yaml
+kubectl delete -f 06-gateway-api-examples.yaml
 
 # Delete namespaces (for network policies)
 kubectl delete namespace netpol-demo monitoring external
+
+# Delete Gateway API CRDs (if no longer needed)
+# kubectl delete -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
 ```

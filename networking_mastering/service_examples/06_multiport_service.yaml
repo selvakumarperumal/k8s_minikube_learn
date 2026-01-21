@@ -1,0 +1,111 @@
+# ============================================================
+# Multi-Port Service Example
+# ============================================================
+# This example demonstrates a Service exposing multiple ports
+# from a single deployment. Each port MUST have a name when
+# defining multiple ports in a Service.
+#
+# Use case: Application serving HTTP, HTTPS, and metrics
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+        - name: nginx
+          image: nginxdemos/hello
+          ports:
+            # HTTP port
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            # HTTPS port (if TLS configured)
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            # Metrics port (e.g., for Prometheus scraping)
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+---
+# ============================================================
+# Multi-Port ClusterIP Service
+# ============================================================
+# IMPORTANT: When a Service exposes multiple ports, each port
+# MUST have a unique 'name' field. This name is used for:
+#   1. Service discovery (DNS SRV records)
+#   2. Referencing in other resources (e.g., Ingress)
+#   3. Debugging and logging
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-multiport
+  labels:
+    app: web-app
+    type: multiport
+spec:
+  type: ClusterIP
+
+  selector:
+    app: web-app
+
+  ports:
+    # Port 1: HTTP traffic
+    - name: http # Name is REQUIRED for multi-port services
+      protocol: TCP
+      port: 80 # Service port (what clients connect to)
+      targetPort: 80 # Container port (where traffic is sent)
+
+    # Port 2: HTTPS traffic (if container supports it)
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443
+
+    # Port 3: Metrics endpoint (e.g., for Prometheus)
+    - name: metrics
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+# ============================================================
+# Testing Multi-Port Service:
+# ============================================================
+#
+# 1. Apply this manifest:
+#    kubectl apply -f 06_multiport_service.yaml
+#
+# 2. View the service:
+#    kubectl get svc web-multiport
+#    kubectl describe svc web-multiport
+#
+# 3. Test each port from within the cluster:
+#    kubectl run test --image=busybox:1.28 --rm -it -- wget -qO- http://web-multiport:80
+#    kubectl run test --image=busybox:1.28 --rm -it -- wget -qO- http://web-multiport:9090
+#
+# 4. Check endpoints for all ports:
+#    kubectl get endpoints web-multiport
+#
+# ============================================================

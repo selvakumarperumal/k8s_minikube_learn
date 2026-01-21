@@ -40,6 +40,42 @@
 #    kubectl delete -f 06-gateway-api-examples.yaml
 #
 # ============================================================================
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │              Gateway API Request Flow                       │
+# ├─────────────────────────────────────────────────────────────┤
+# │                                                             │
+# │   1. Client requests: https://api.local/users               │
+# │                           │                                 │
+# │   2. DNS resolves to Gateway LoadBalancer IP                │
+# │                           │                                 │
+# │   3. Gateway receives on listener                           │
+# │      - Protocol: HTTP (port 80)                             │
+# │      - Hostname match: *.local                              │
+# │                           │                                 │
+# │   4. HTTPRoute matching                                     │
+# │      - parentRefs: main-gateway ✓                           │
+# │      - hostname: api.local ✓                                │
+# │      - path: /users (PathPrefix: /) ✓                       │
+# │                           │                                 │
+# │   5. Filters applied (if any)                               │
+# │      - URLRewrite: /v1/users → /users                       │
+# │      - RequestHeaderModifier: add X-Request-ID              │
+# │                           │                                 │
+# │   6. Backend selection                                      │
+# │      - backendRef: api-service:80                           │
+# │      - weight: 100 (or split for canary)                    │
+# │                           │                                 │
+# │   7. Request forwarded to Service → Pod                     │
+# │      - Load balanced to healthy pod                         │
+# │                           │                                 │
+# │   8. Response returns via same path                         │
+# │      - ResponseHeaderModifier applied                       │
+# │      - Client receives response                             │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+#
+# ============================================================================
 
 ---
 # ============================================================================

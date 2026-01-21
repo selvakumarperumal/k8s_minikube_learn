@@ -145,6 +145,47 @@ sequenceDiagram
     AppB-->>Client: 7. Response (reverse)
 ```
 
+### Detailed Istio Request Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Istio + Gateway API Request Flow          │
+│                                                              │
+│   1. Client sends request: https://api.example.com/users    │
+│                           │                                  │
+│   2. DNS resolves to Gateway Service IP (LoadBalancer)      │
+│                           │                                  │
+│   3. K8s Gateway API Gateway receives request               │
+│      - Matches listener (port 80/443)                       │
+│      - Applies TLS termination if HTTPS                     │
+│                           │                                  │
+│   4. HTTPRoute or VirtualService matches request            │
+│      - Host: api.example.com                                │
+│      - Path: /users                                         │
+│      - Headers: (optional matching)                         │
+│                           │                                  │
+│   5. DestinationRule applies traffic policy                 │
+│      - Load balancing: ROUND_ROBIN                          │
+│      - Subset selection: v1 or v2                           │
+│      - Circuit breaker: check health                        │
+│                           │                                  │
+│   6. Request forwarded to Pod's Envoy sidecar               │
+│      - mTLS encrypts traffic between proxies                │
+│      - Envoy adds telemetry headers                         │
+│                           │                                  │
+│   7. Envoy sidecar delivers to application container        │
+│      - Localhost connection (127.0.0.1)                     │
+│      - Original headers preserved                           │
+│                           │                                  │
+│   8. Application processes and responds                      │
+│                           │                                  │
+│   9. Response returns via same path (reverse)               │
+│      - Envoy collects metrics                               │
+│      - Tracing span completed                               │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## Installing Istio
@@ -491,6 +532,48 @@ Client ◄────────────────────► Server
         (Both trust each other)
 ```
 
+### mTLS Request Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     mTLS Flow in Istio                       │
+│                                                              │
+│   1. Pod A's app makes request to Pod B service              │
+│                           │                                  │
+│   2. Request intercepted by Pod A's Envoy sidecar           │
+│      - Outbound traffic capture via iptables                │
+│                           │                                  │
+│   3. Envoy initiates mTLS handshake                         │
+│      - Presents certificate (issued by istiod)              │
+│      - Verifies Pod A's identity: spiffe://cluster/ns/...   │
+│                           │                                  │
+│   4. Pod B's Envoy sidecar receives handshake               │
+│      - Validates Pod A's certificate                        │
+│      - Presents its own certificate                         │
+│      - Both sides establish encrypted channel               │
+│                           │                                  │
+│   5. Encrypted request sent over mTLS                       │
+│      - TLS 1.3 with strong ciphers                          │
+│      - No plaintext visible on network                      │
+│                           │                                  │
+│   6. Pod B's Envoy delivers to app container                │
+│      - Decrypted to plaintext HTTP                          │
+│      - App sees normal HTTP request                         │
+│                           │                                  │
+│   7. Response flows back (same encrypted path)              │
+│                                                              │
+│   ┌─────────┐  🔒 mTLS   ┌─────────┐                         │
+│   │ Pod A   │────────────│ Pod B   │                         │
+│   │ ┌─────┐ │            │ ┌─────┐ │                         │
+│   │ │App  │ │            │ │App  │ │                         │
+│   │ ├─────┤ │            │ ├─────┤ │                         │
+│   │ │Envoy│ │            │ │Envoy│ │                         │
+│   │ └─────┘ │            │ └─────┘ │                         │
+│   └─────────┘            └─────────┘                         │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ### PeerAuthentication
 
 ```yaml
@@ -604,6 +687,48 @@ istioctl dashboard jaeger
 ## YAML Explained
 
 ### Complete Canary Deployment
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 Canary Deployment Flow                       │
+│                                                              │
+│   1. Deploy both versions (v1 stable, v2 canary)            │
+│      - v1: 3 replicas (production)                          │
+│      - v2: 1 replica (canary)                               │
+│                           │                                  │
+│   2. DestinationRule defines subsets                        │
+│      - subset: v1 (version=v1 label)                        │
+│      - subset: v2 (version=v2 label)                        │
+│                           │                                  │
+│   3. VirtualService splits traffic                          │
+│      - 90% → v1 (stable)                                    │
+│      - 10% → v2 (canary)                                    │
+│                           │                                  │
+│   4. Monitor metrics (Prometheus, Grafana)                  │
+│      - Error rates                                          │
+│      - Latency                                              │
+│      - Success rate                                         │
+│                           │                                  │
+│   5. Gradually increase canary traffic                      │
+│      - 10% → 25% → 50% → 100%                              │
+│                           │                                  │
+│   6. If issues detected: rollback to 100% v1                │
+│      If successful: promote v2 to 100%                      │
+│                                                              │
+│   ┌───────────────────────────────────────────┐              │
+│   │  100 requests → VirtualService            │              │
+│   │                    │                      │              │
+│   │         ┌──────────┴──────────┐           │              │
+│   │         │                     │           │              │
+│   │         ▼                     ▼           │              │
+│   │   ┌─────────┐          ┌─────────┐        │              │
+│   │   │  v1     │ 90       │  v2     │ 10     │              │
+│   │   │ (stable)│ req      │ (canary)│ req    │              │
+│   │   └─────────┘          └─────────┘        │              │
+│   └───────────────────────────────────────────┘              │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ```yaml
 # ============================================================================

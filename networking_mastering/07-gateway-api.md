@@ -406,7 +406,53 @@ flowchart TB
     style Route2 fill:#50fa7b,stroke:#8be9fd,color:#282a36
 ```
 
----
+### Detailed Gateway API Request Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               Gateway API Request Flow                       │
+│                                                              │
+│   1. User requests: https://api.example.com/users           │
+│                           │                                  │
+│   2. DNS resolves to Gateway Service IP (LoadBalancer)      │
+│                           │                                  │
+│   3. Gateway receives request on listener                   │
+│      - Matches protocol: HTTP or HTTPS                      │
+│      - Matches port: 80 or 443                             │
+│      - Matches hostname: api.example.com                    │
+│                           │                                  │
+│   4. TLS termination (if HTTPS)                             │
+│      - Decrypts using certificateRef secret                 │
+│      - Validates certificate                                 │
+│                           │                                  │
+│   5. HTTPRoute matching                                      │
+│      - Checks parentRefs (attached to this Gateway?)       │
+│      - Matches hostname: api.example.com                    │
+│      - Matches path: /users (PathPrefix)                   │
+│      - Matches headers: (optional)                          │
+│      - Matches method: GET (optional)                       │
+│                           │                                  │
+│   6. Filters applied (if any)                               │
+│      - RequestHeaderModifier: add/set/remove headers       │
+│      - URLRewrite: modify path                             │
+│      - RequestRedirect: redirect to another URL            │
+│                           │                                  │
+│   7. Backend selection                                       │
+│      - Selects from backendRefs                             │
+│      - Applies weight for traffic splitting                 │
+│      - Load balances across pods                            │
+│                           │                                  │
+│   8. Request forwarded to Service → Pod                     │
+│      - ClusterIP used internally                            │
+│      - iptables/IPVS routes to pod                          │
+│                           │                                  │
+│   9. Response returns via same path                          │
+│      - ResponseHeaderModifier applied (if any)              │
+│      - TLS encryption (if HTTPS)                            │
+│      - Client receives response                             │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Advanced Routing
 

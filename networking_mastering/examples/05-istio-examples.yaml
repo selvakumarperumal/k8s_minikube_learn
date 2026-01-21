@@ -41,6 +41,46 @@
 #    kubectl delete -f 05-istio-examples.yaml
 #
 # ============================================================================
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │                 Istio + Gateway API Request Flow            │
+# ├─────────────────────────────────────────────────────────────┤
+# │                                                             │
+# │   1. Client sends: https://myapp.example.com/api            │
+# │                           │                                 │
+# │   2. DNS resolves to Gateway Service IP (LoadBalancer)      │
+# │                           │                                 │
+# │   3. K8s Gateway API Gateway receives request               │
+# │      - gatewayClassName: istio                              │
+# │      - Listener: port 80/443                                │
+# │                           │                                 │
+# │   4. HTTPRoute or VirtualService matches request            │
+# │      - Path matching: /api                                  │
+# │      - Header matching: X-Version: v2                       │
+# │                           │                                 │
+# │   5. DestinationRule applies policies                       │
+# │      - Subset: v1 or v2                                     │
+# │      - Load balancing: ROUND_ROBIN                          │
+# │      - Circuit breaker: 5 errors → eject                    │
+# │                           │                                 │
+# │   6. Envoy sidecar (source pod) initiates mTLS              │
+# │      - Certificate exchange via istiod                      │
+# │      - Encrypted connection established                     │
+# │                           │                                 │
+# │   7. Envoy sidecar (target pod) receives encrypted request  │
+# │      - Validates mTLS                                       │
+# │      - Forwards to localhost app container                  │
+# │                           │                                 │
+# │   8. Application processes request and responds             │
+# │                           │                                 │
+# │   9. Response flows back (reverse path)                     │
+# │      - Metrics collected (Prometheus)                       │
+# │      - Traces recorded (Jaeger)                             │
+# │      - Logs aggregated                                      │
+# │                                                             │
+# └─────────────────────────────────────────────────────────────┘
+#
+# ============================================================================
 
 ---
 # ============================================================================
@@ -78,6 +118,9 @@ spec:
             requests:
               cpu: 50m
               memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
 
 ---
 # Version 2 Deployment
@@ -111,6 +154,9 @@ spec:
             requests:
               cpu: 50m
               memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
 
 ---
 # Service (selects both v1 and v2)

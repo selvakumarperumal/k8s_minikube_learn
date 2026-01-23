@@ -4,12 +4,12 @@ Complete Ingress configurations with backend Deployments, Services, and detailed
 
 ## Files
 
-| File | Topic | Description |
-|------|-------|-------------|
-| [01_path_based.yaml](01_path_based.yaml) | Path-Based Routing | Route `/api/*`, `/web/*` to different services |
-| [02_host_based.yaml](02_host_based.yaml) | Host-Based Routing | Route different hostnames to different services |
-| [03_tls_ingress.yaml](03_tls_ingress.yaml) | TLS/HTTPS | SSL termination, HTTP→HTTPS redirect, HSTS |
-| [04_rate_limiting.yaml](04_rate_limiting.yaml) | Rate Limiting & Security | RPS limits, IP whitelist, basic auth, custom headers |
+| File | Explanation | Topic | Description |
+|------|-------------|-------|-------------|
+| [01_path_based.yaml](01_path_based.yaml) | [📖 Explained](01_path_based_explained.md) | Path-Based Routing | Route `/api/*`, `/web/*` to different services |
+| [02_host_based.yaml](02_host_based.yaml) | [📖 Explained](02_host_based_explained.md) | Host-Based Routing | Route different hostnames to different services |
+| [03_tls_ingress.yaml](03_tls_ingress.yaml) | [📖 Explained](03_tls_ingress_explained.md) | TLS/HTTPS | SSL termination, HTTP→HTTPS redirect, HSTS |
+| [04_rate_limiting.yaml](04_rate_limiting.yaml) | [📖 Explained](04_rate_limiting_explained.md) | Rate Limiting & Security | RPS limits, IP whitelist, basic auth, custom headers |
 
 ## Quick Start
 
